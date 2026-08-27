@@ -100,7 +100,7 @@ def rebuild_messages(log_path: str, to_step: int) -> list[dict]:
             msg = {"role": "assistant", "content": e.get("content") or ""}
             pending_calls = e.get("tool_calls") or []
             if pending_calls:
-                msg["tool_calls"] = pending_calls
+                msg["tool_calls"] = list(pending_calls)
             messages.append(msg)
         elif e["type"] == "tool" and pending_calls:
             tc = pending_calls.pop(0)
