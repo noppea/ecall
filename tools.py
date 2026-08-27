@@ -50,7 +50,15 @@ def write_file(path: str, content: str) -> str:
     return f"ok: 已写入 {path}（{len(content)} 字符）"
 
 
-# ---------- edit_file：外科手术式编辑（今天的硬骨头） ----------
+def peek_file(path: str) -> str | None:
+    """时间旅行的快照探针：返回文件当前内容；不存在则返回 None。"""
+    p = _jail(path)
+    if not p.exists():
+        return None
+    return p.read_text(encoding="utf-8", errors="replace")
+
+
+# ---------- edit_file：外科手术式编辑 ----------
 
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     """把 old_string 替换为 new_string。
