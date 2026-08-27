@@ -28,6 +28,8 @@ MAX_TOTAL_TOKENS = 200_000  # 终止条件④：token 总预算（整个任务�
 WARN_REMAINING = 3          # 剩余 3 步时提醒模型收尾
 REPEAT_CALL_LIMIT = 3       # 同一调用重复 N 次判定为振荡
 
+MUTATING_TOOLS = ("write_file", "edit_file")  # 动手前要打 checkpoint 的工具
+
 
 def build_system_prompt() -> str:
     """把工作区绝对路径注入系统提示词（会话内常量，不破坏前缀缓存）。"""
@@ -47,8 +49,7 @@ def _msg_to_dict(message) -> dict:
 
 
 def _default_log_path() -> str:
-    """轨迹日志放 ~/.ecall/logs/，绝不写进工作区——
-    否则 agent 会 grep 到自己的日志、读自己的黑历史（实测翻车过，叫自我污染）。"""
+    """轨迹日志放 ~/.ecall/logs/，绝不写进工作区（防自我污染）。"""
     log_dir = Path.home() / ".ecall" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -56,13 +57,20 @@ def _default_log_path() -> str:
 
 
 def run(task: str, log_path: str | None = None):
-    """执行一个任务，返回 (最终回复, 总 token 数, 轨迹文件路径)。"""
-    if log_path is None:
-        log_path = _default_log_path()
+    """执行一个新任务，返回 (最终回复, 总 token 数, 轨迹文件路径)。"""
     messages = [
         {"role": "system", "content": build_system_prompt()},
         {"role": "user", "content": task},
     ]
+    header = {"type": "task", "content": task, "workspace": str(tools.WORKSPACE)}
+    return run_messages(messages, log_path, header=header)
+
+
+def run_messages(messages: list[dict], log_path: str | None = None,
+                 header: dict | None = None):
+    """从一段已有历史开始/继续跑主循环（fork 时间线也走这里）。"""
+    if log_path is None:
+        log_path = _default_log_path()
     total_tokens = 0
     consecutive_errors = 0
     warned = False
@@ -73,7 +81,8 @@ def run(task: str, log_path: str | None = None):
             log.write(json.dumps(event, ensure_ascii=False) + "\n")
             log.flush()  # 崩了也不丢最后一条
 
-        record({"type": "task", "content": task, "workspace": str(tools.WORKSPACE)})
+        if header:
+            record(header)
 
         for step in range(1, MAX_STEPS + 1):
             # —— 内存管理：逼近上下文预算就压缩老的工具输出 ——
@@ -115,7 +124,7 @@ def run(task: str, log_path: str | None = None):
                 "est_context": context.estimate_tokens(messages),
             })
 
-            # —— 终止条件④：token 总预算耗尽（整个任务的累计花费）——
+            # —— 终止条件④：token 总预算耗尽 ——
             if total_tokens > MAX_TOTAL_TOKENS:
                 record({"type": "abort", "reason": "token_budget",
                         "total_tokens": total_tokens})
@@ -135,13 +144,21 @@ def run(task: str, log_path: str | None = None):
                 call_counts[sig] += 1
 
                 if call_counts[sig] >= REPEAT_CALL_LIMIT:
-                    # 振荡检测：同一调用原地打转，不再执行，直接警告它换思路。
-                    # 注意：每个 tool_call 都必须有对应的 tool 响应，否则 API 报错——
-                    # 所以警告是以「工具结果」的形式喂回去的。
+                    # 振荡检测：同一调用原地打转，不再执行，把警告装进工具结果喂回去
+                    # （每个 tool_call 都必须有对应的 tool 响应，否则 API 报错）。
                     result = (f"error: [runtime] 振荡检测：完全相同的调用已重复 "
                               f"{REPEAT_CALL_LIMIT} 次，本次未执行。请分析根因、换个思路。")
                     record({"type": "oscillation", "step": step, "name": sig[0]})
                 else:
+                    # WAL：变更型工具动手前，先把旧内容记进轨迹（供 rewind 倒放）
+                    if tc.function.name in MUTATING_TOOLS:
+                        try:
+                            args = json.loads(tc.function.arguments)
+                            record({"type": "checkpoint", "step": step,
+                                    "path": args["path"],
+                                    "old_content": tools.peek_file(args["path"])})
+                        except Exception:
+                            pass  # 快照失败不阻塞主流程
                     print(f"[step {step}] {tc.function.name}({tc.function.arguments[:60]}...)")
                     result = tools.execute(tc.function.name, tc.function.arguments)
                     record({
