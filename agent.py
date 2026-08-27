@@ -1,7 +1,9 @@
 # agent.py — ecall 主循环：思考 → 调工具 → 观察 → 再思考。
 
 import json
+import time
 from collections import Counter
+from pathlib import Path
 
 import context
 import llm
@@ -22,7 +24,7 @@ SYSTEM_PROMPT = (
 
 MAX_STEPS = 30              # 终止条件②：步数预算
 MAX_CONSECUTIVE_ERRORS = 5  # 终止条件③：连续错误预算
-MAX_TOTAL_TOKENS = 200_000  # 终止条件④：token 总预算
+MAX_TOTAL_TOKENS = 200_000  # 终止条件④：token 总预算（整个任务的累计花费）
 WARN_REMAINING = 3          # 剩余 3 步时提醒模型收尾
 REPEAT_CALL_LIMIT = 3       # 同一调用重复 N 次判定为振荡
 
@@ -44,8 +46,19 @@ def _msg_to_dict(message) -> dict:
     return d
 
 
-def run(task: str, log_path: str = "trajectory.jsonl"):
-    """执行一个任务，返回 (最终回复, 总 token 数)。轨迹全程落盘 JSONL。"""
+def _default_log_path() -> str:
+    """轨迹日志放 ~/.ecall/logs/，绝不写进工作区——
+    否则 agent 会 grep 到自己的日志、读自己的黑历史（实测翻车过，叫自我污染）。"""
+    log_dir = Path.home() / ".ecall" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return str(log_dir / f"{tools.WORKSPACE.name}-{stamp}.jsonl")
+
+
+def run(task: str, log_path: str | None = None):
+    """执行一个任务，返回 (最终回复, 总 token 数, 轨迹文件路径)。"""
+    if log_path is None:
+        log_path = _default_log_path()
     messages = [
         {"role": "system", "content": build_system_prompt()},
         {"role": "user", "content": task},
@@ -86,13 +99,13 @@ def run(task: str, log_path: str = "trajectory.jsonl"):
                     message, usage = llm.chat(messages, tools.SCHEMAS)
                 except Exception as e:
                     record({"type": "fatal", "step": step, "error": str(e)})
-                    return f"模型调用失败（压缩后仍失败）：{e}", total_tokens
+                    return f"模型调用失败（压缩后仍失败）：{e}", total_tokens, log_path
             except llm.FatalConfigError as e:
                 record({"type": "fatal", "step": step, "error": str(e)})
-                return f"模型配置错误（请检查 key 与模型名）：{e}", total_tokens
+                return f"模型配置错误（请检查 key 与模型名）：{e}", total_tokens, log_path
             except Exception as e:
                 record({"type": "fatal", "step": step, "error": str(e)})
-                return f"模型调用失败：{e}", total_tokens
+                return f"模型调用失败：{e}", total_tokens, log_path
 
             total_tokens += usage.total_tokens if usage else 0
             record({
@@ -102,16 +115,16 @@ def run(task: str, log_path: str = "trajectory.jsonl"):
                 "est_context": context.estimate_tokens(messages),
             })
 
-            # —— 终止条件④：token 总预算耗尽 ——
+            # —— 终止条件④：token 总预算耗尽（整个任务的累计花费）——
             if total_tokens > MAX_TOTAL_TOKENS:
                 record({"type": "abort", "reason": "token_budget",
                         "total_tokens": total_tokens})
-                return f"超出 token 预算（{total_tokens}），任务中止。", total_tokens
+                return f"超出 token 预算（{total_tokens}），任务中止。", total_tokens, log_path
 
             # —— 终止条件①：模型不再调用工具 = 它认为做完了 ——
             if not message.tool_calls:
                 record({"type": "done", "step": step, "total_tokens": total_tokens})
-                return message.content, total_tokens
+                return message.content, total_tokens, log_path
 
             # —— 历史只 append、不改写（前缀缓存铁律；压缩是唯一例外，见 context.py）——
             messages.append(_msg_to_dict(message))
@@ -140,7 +153,7 @@ def run(task: str, log_path: str = "trajectory.jsonl"):
                     consecutive_errors += 1
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                         record({"type": "abort", "reason": "consecutive_errors"})
-                        return "连续错误过多，任务中止。", total_tokens
+                        return "连续错误过多，任务中止。", total_tokens, log_path
                 else:
                     consecutive_errors = 0
 
@@ -150,4 +163,4 @@ def run(task: str, log_path: str = "trajectory.jsonl"):
 
         # —— 终止条件②：步数预算耗尽 ——
         record({"type": "abort", "reason": "max_steps"})
-        return f"超出步数预算（{MAX_STEPS}），任务中止。", total_tokens
+        return f"超出步数预算（{MAX_STEPS}），任务中止。", total_tokens, log_path

@@ -20,6 +20,9 @@ MAX_LIST_ENTRIES = 200   # list_dir 截断
 MAX_GREP_MATCHES = 50    # grep 截断
 MAX_GLOB_RESULTS = 100   # glob 截断
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+# 自我污染防线：agent 的轨迹日志、编辑临时文件不该出现在它自己的视野里
+SKIP_FILES = {"trajectory.jsonl"}
+SKIP_SUFFIXES = (".ecalltmp",)
 
 
 def _jail(path: str) -> Path:
@@ -132,7 +135,8 @@ def list_dir(path: str = ".") -> str:
             continue
         indent = "  " * depth
         out.append(f"{indent}{Path(dirpath).name}/")
-        out.extend(f"{indent}  {f}" for f in sorted(filenames))
+        out.extend(f"{indent}  {f}" for f in sorted(filenames)
+                   if f not in SKIP_FILES and not f.endswith(SKIP_SUFFIXES))
         if len(out) > MAX_LIST_ENTRIES:
             out.append("... 条目过多，已截断")
             break
@@ -149,7 +153,7 @@ def grep(pattern: str, path: str = ".") -> str:
     for p in sorted(root.rglob("*")):
         if any(part in SKIP_DIRS for part in p.relative_to(root).parts):
             continue
-        if not p.is_file():
+        if not p.is_file() or p.name in SKIP_FILES or p.name.endswith(SKIP_SUFFIXES):
             continue
         for i, line in enumerate(
                 p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
@@ -164,6 +168,7 @@ def glob_files(pattern: str) -> str:
     hits = sorted(
         p for p in WORKSPACE.glob(pattern)
         if not any(part in SKIP_DIRS for part in p.relative_to(WORKSPACE).parts)
+        and p.name not in SKIP_FILES and not p.name.endswith(SKIP_SUFFIXES)
     )
     out = [str(p.relative_to(WORKSPACE)) for p in hits[:MAX_GLOB_RESULTS]]
     if len(hits) > MAX_GLOB_RESULTS:
@@ -171,7 +176,11 @@ def glob_files(pattern: str) -> str:
     return "\n".join(out) or "（无匹配）"
 
 
-#shell：风险分级
+# ---------- shell：风险分级 ----------
+#
+# 昨晚的实验结论：_jail 关不住 shell 通道（模型用 cat ~/... 就越狱了）。
+# 完整的文件系统隔离需要 bubblewrap 之类的内核级沙箱（列入未来工作）；
+# v2 的缓解是三级风险分级：readonly 放行 / mutating 放行但标注进轨迹 / dangerous 拒绝。
 
 READONLY_CMDS = {"ls", "cat", "pwd", "head", "tail", "wc", "grep", "rg", "find",
                  "echo", "which", "file", "stat", "tree", "diff", "env", "date"}
@@ -202,8 +211,8 @@ def run_shell(command: str, timeout: int = 60) -> str:
     return out if len(out) <= MAX_OUTPUT_CHARS else out[:MAX_OUTPUT_CHARS] + "\n... 输出已截断"
 
 
-# Schema：随请求发给模型，告诉它有哪些系统调用
-# description 就是模型的使用说明书，写得越具体，模型用得越准。
+# ---------- Schema：随请求发给模型，告诉它「有哪些系统调用」 ----------
+# 注意：description 就是模型的使用说明书，写得越具体，模型用得越准。
 
 SCHEMAS = [
     {"type": "function", "function": {
