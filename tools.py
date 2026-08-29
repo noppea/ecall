@@ -7,6 +7,7 @@ import difflib
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -184,16 +185,12 @@ def glob_files(pattern: str) -> str:
     return "\n".join(out) or "（无匹配）"
 
 
-# ---------- shell：风险分级 ----------
-#
-# 昨晚的实验结论：_jail 关不住 shell 通道（模型用 cat ~/... 就越狱了）。
-# 完整的文件系统隔离需要 bubblewrap 之类的内核级沙箱（列入未来工作）；
-# v2 的缓解是三级风险分级：readonly 放行 / mutating 放行但标注进轨迹 / dangerous 拒绝。
-
 READONLY_CMDS = {"ls", "cat", "pwd", "head", "tail", "wc", "grep", "rg", "find",
                  "echo", "which", "file", "stat", "tree", "diff", "env", "date"}
 DANGEROUS_PATTERNS = ("rm -rf", "rm -fr", "mkfs", "shutdown", "reboot", ":(){",
                       "dd if=", "> /dev/sd", "chmod -R /", "chown -R /")
+
+_BWRAP_OK = None  # 惰性探测缓存：None=未探测，True/False=结论
 
 
 def _classify(command: str) -> str:
@@ -205,17 +202,62 @@ def _classify(command: str) -> str:
     return "readonly" if firsts and firsts <= READONLY_CMDS else "mutating"
 
 
+def _bwrap_available() -> bool:
+    """惰性探测沙箱可用性：环境变量开启 + 有二进制 + 金丝雀命令真的跑得起来。
+
+    有些发行版默认禁用非特权用户命名空间，bwrap 装了也白装，
+    所以不能只查 which，要真跑一次（结果缓存，只探测一次）。
+    """
+    global _BWRAP_OK
+    if _BWRAP_OK is not None:
+        return _BWRAP_OK
+    _BWRAP_OK = False
+    if os.environ.get("ECALL_BWRAP") == "1" and shutil.which("bwrap"):
+        try:
+            canary = subprocess.run(
+                ["bwrap", "--ro-bind", "/", "/", "--unshare-net", "--", "true"],
+                capture_output=True, timeout=10)
+            _BWRAP_OK = canary.returncode == 0
+        except Exception:
+            pass  # 探测本身失败也按不可用处理，降级为裸执行
+    return _BWRAP_OK
+
+
+def _bwrap_argv(command: str) -> list[str]:
+    """组装沙箱命令行。
+
+    挂载顺序有讲究：先只读挂根、再用 tmpfs 盖住 /tmp（程序写临时文件的安全垫）、
+    最后把工作区重新挂成可写——bwrap 的挂载按顺序叠加，后挂的盖住先挂的；
+    --bind 的源路径在宿主侧解析，所以评测把临时工作区放在 /tmp 下也照样能挂。
+    """
+    ws = str(WORKSPACE)
+    return ["bwrap",
+            "--ro-bind", "/", "/",     # 根文件系统整体只读：~/、/etc、/usr 全摸不得
+            "--tmpfs", "/tmp",         # 盖住真 /tmp，给编译器等一个可写的临时区
+            "--bind", ws, ws,          # 唯一的可写缺口：工作区
+            "--proc", "/proc",         # 全新的 proc，看不到宿主机进程
+            "--unshare-net",           # 断网：curl/pip install 直接失败
+            "--die-with-parent",       # 父进程被杀时沙箱内进程陪葬，不留孤儿
+            "--chdir", ws,
+            "--", "bash", "-c", command]
+
+
 def run_shell(command: str, timeout: int = 60) -> str:
     level = _classify(command)
     if level == "dangerous":
         return f"error: 命中危险命令拦截（{command[:60]}）"
+    sandboxed = _bwrap_available()
     try:
-        proc = subprocess.run(command, shell=True, cwd=WORKSPACE,
-                              capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            _bwrap_argv(command) if sandboxed else command,
+            shell=not sandboxed, cwd=WORKSPACE,
+            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return f"error: 执行超时（{timeout}s）"
-    # 风险等级标注进返回文本：轨迹可审计，也为后续的审批门留好位置
-    out = f"[{level}] exit={proc.returncode}\n{proc.stdout}{proc.stderr}"
+    # 风险等级 + 运行模式都标注进返回文本：轨迹可审计，模型也能从
+    # [..|bwrap] 和断网报错里学会「这台机器没网」，而不是盲目重试
+    mode = "bwrap" if sandboxed else "host"
+    out = f"[{level}|{mode}] exit={proc.returncode}\n{proc.stdout}{proc.stderr}"
     return out if len(out) <= MAX_OUTPUT_CHARS else out[:MAX_OUTPUT_CHARS] + "\n... 输出已截断"
 
 
@@ -280,7 +322,8 @@ SCHEMAS = [
         }}},
     {"type": "function", "function": {
         "name": "run_shell",
-        "description": "在工作区内执行 shell 命令（有超时、截断与风险分级）",
+        "description": ("在工作区内执行 shell 命令（有超时、截断与风险分级；"
+                        "沙箱模式下文件系统只读且断网）"),
         "parameters": {
             "type": "object", "additionalProperties": False,
             "properties": {"command": {"type": "string"},
