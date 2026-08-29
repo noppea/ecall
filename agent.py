@@ -185,6 +185,14 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                 record({"type": "compress", "step": step, "events": events,
                         "est_tokens": context.estimate_tokens(messages)})
 
+            # 转向门：步边界是安全点，检查有没有运行中投递的用户指令
+            steer = _poll_steer()
+            if steer:
+                print(f"[step {step}] 收到转向指令：{steer[:50]}")
+                messages.append({"role": "user",
+                                 "content": f"[runtime] 用户转向指令：{steer}"})
+                record({"type": "steer", "step": step, "content": steer})
+
             # 预算预警：让模型体面收尾，而不是被硬切断
             if not warned and max_steps - step <= WARN_REMAINING:
                 messages.append({"role": "user", "content":
