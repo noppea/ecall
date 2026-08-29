@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -200,14 +201,23 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                 warned = True
 
             # —— 思考：把全部历史发给模型。模型无记忆，历史即状态 ——
+            # 流式透传：仅交互终端 + 非子代理时把内容增量实时打印出来
+            # （评测走管道自动静默；子代理的思考不刷父代理的屏）
+            streamed = [False]
+            if sys.stdout.isatty() and not _sub:
+                def on_token(s: str, _f=streamed):
+                    _f[0] = True
+                    print(s, end="", flush=True)
+            else:
+                on_token = None
             try:
-                message, usage = llm.chat(messages, schemas)
+                message, usage = llm.chat(messages, schemas, on_token=on_token)
             except llm.ContextOverflow:
                 # 缺页处理：窗口炸了 → 强制压缩 → 重试一次
                 messages, events = context.compress(messages)
                 record({"type": "overflow_compress", "step": step, "events": events})
                 try:
-                    message, usage = llm.chat(messages, schemas)
+                    message, usage = llm.chat(messages, schemas, on_token=on_token)
                 except Exception as e:
                     record({"type": "fatal", "step": step, "error": str(e)})
                     return f"模型调用失败（压缩后仍失败）：{e}", total_tokens, log_path
@@ -217,6 +227,8 @@ def run_messages(messages: list[dict], log_path: str | None = None,
             except Exception as e:
                 record({"type": "fatal", "step": step, "error": str(e)})
                 return f"模型调用失败：{e}", total_tokens, log_path
+            if streamed[0]:
+                print()  # 流式输出收尾换行，再接后面的 [step N] 行
 
             total_tokens += usage.total_tokens if usage else 0
             record({
