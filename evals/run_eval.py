@@ -48,6 +48,7 @@ def run_one(task: dict, config: str, rep: int) -> dict:
         subprocess.run(
             [sys.executable, str(ECALL_DIR / "main.py"), task["prompt"]],
             cwd=ws, env=env, capture_output=True, text=True, timeout=900,
+            stdin=subprocess.DEVNULL,  # 非交互：审批门走自动放行路径，绝不阻塞评测
         )
         wall = time.time() - t0
 
