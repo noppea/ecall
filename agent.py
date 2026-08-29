@@ -1,6 +1,7 @@
 # agent.py — ecall 主循环：思考 → 调工具 → 观察 → 再思考。
 
 import json
+import os
 import time
 from collections import Counter
 from pathlib import Path
@@ -49,7 +50,12 @@ def _msg_to_dict(message) -> dict:
 
 
 def _default_log_path() -> str:
-    """轨迹日志放 ~/.ecall/logs/，绝不写进工作区（防自我污染）。"""
+    """轨迹日志放 ~/.ecall/logs/，绝不写进工作区（防自我污染）。
+    评测器可用 ECALL_LOG 环境变量指定落点。"""
+    override = os.environ.get("ECALL_LOG")
+    if override:
+        Path(override).parent.mkdir(parents=True, exist_ok=True)
+        return override
     log_dir = Path.home() / ".ecall" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")

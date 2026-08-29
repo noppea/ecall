@@ -289,6 +289,11 @@ SCHEMAS = [
         }}},
 ]
 
+# mini 模式（消融对照组）：只留 run_shell 一个工具，复刻 mini-SWE-agent 的极简设定，
+# 用来实测「工具面」这个变量到底贡献多少 pass 率、多花多少 token。
+if os.environ.get("ECALL_MINI") == "1":
+    SCHEMAS = [s for s in SCHEMAS if s["function"]["name"] == "run_shell"]
+
 HANDLERS = {
     "read_file": lambda a: read_file(a["path"]),
     "write_file": lambda a: write_file(a["path"], a["content"]),

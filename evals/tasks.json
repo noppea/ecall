@@ -1,0 +1,64 @@
+[
+  {
+    "id": "fix-add",
+    "prompt": "calc.py 里的 add 函数有 bug，修复它并验证。",
+    "files": {
+      "calc.py": "def add(a, b):\n    return a - b\n"
+    },
+    "check": "python3 -c \"from calc import add; assert add(2,3)==5 and add(-1,1)==0\""
+  },
+  {
+    "id": "fizzbuzz-arg",
+    "prompt": "写一个 fizzbuzz.py，默认打印 1..100 的 FizzBuzz，支持命令行参数指定上限，并运行验证。",
+    "files": {},
+    "check": "test -f fizzbuzz.py && python3 fizzbuzz.py 15 | tail -1 | grep -q FizzBuzz"
+  },
+  {
+    "id": "debug-crash",
+    "prompt": "main.py 一运行就崩溃，修复它，让它能正常结束（打印空列表的提示即可）。",
+    "files": {
+      "main.py": "data = []\nprint(data[0])\n"
+    },
+    "check": "python3 main.py"
+  },
+  {
+    "id": "fix-mean",
+    "prompt": "check_stats.py 跑不过，找出原因并修复，使它通过。",
+    "files": {
+      "stats.py": "def mean(xs):\n    return sum(xs) // len(xs)\n",
+      "check_stats.py": "from stats import mean\nassert mean([1, 2]) == 1.5\nprint('ok')\n"
+    },
+    "check": "python3 check_stats.py"
+  },
+  {
+    "id": "rename-across-files",
+    "prompt": "把 old_name 函数改名为 answer，a.py 和 b.py 都要同步改，改完运行 b.py 验证输出不变。",
+    "files": {
+      "a.py": "def old_name():\n    return 42\n",
+      "b.py": "from a import old_name\nprint(old_name())\n"
+    },
+    "check": "python3 b.py | grep -q 42 && grep -q 'def answer' a.py && ! grep -q old_name a.py b.py"
+  },
+  {
+    "id": "write-todo-cli",
+    "prompt": "写一个 todo.py：支持 add <事项> 和 list 两个子命令，数据持久化到 todo.json，并自测验证。",
+    "files": {},
+    "check": "python3 todo.py add 买牛奶 && python3 todo.py list | grep -q 买牛奶"
+  },
+  {
+    "id": "fix-sort",
+    "prompt": "sorter.py 的 mysort 排不干净（有 off-by-one），修复并用随机数据验证正确性。",
+    "files": {
+      "sorter.py": "def mysort(xs):\n    n = len(xs)\n    for i in range(n - 1):\n        for j in range(n - i - 2):\n            if xs[j] > xs[j + 1]:\n                xs[j], xs[j + 1] = xs[j + 1], xs[j]\n    return xs\n"
+    },
+    "check": "python3 -c \"from sorter import mysort; import random; random.seed(7); xs=[random.randint(0,99) for _ in range(50)]; assert mysort(xs[:])==sorted(xs)\""
+  },
+  {
+    "id": "add-logging",
+    "prompt": "给 app.py 的 handler 函数加一行带时间戳的日志打印（用 logging 模块），不许改变返回值，改完验证。",
+    "files": {
+      "app.py": "def handler(req):\n    return f'ok {req}'\n"
+    },
+    "check": "python3 -c \"from app import handler; assert handler('x')=='ok x'\" && grep -q logging app.py"
+  }
+]
