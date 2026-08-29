@@ -58,6 +58,8 @@ def print_replay(log_path: str) -> None:
             print(f"  [事件] 压缩了 {len(e.get('events') or [])} 条旧工具输出")
         elif t == "oscillation":
             print(f"  [事件] 振荡警告: {e['name']}")
+        elif t == "steer":
+            print(f"  [转向] 运行中收到用户指令: {e['content'][:80]}")
         elif t == "checkpoint":
             print(f"  [快照] step {e['step']} 备份了 {e['path']} 的旧版本")
         elif t == "done":
@@ -117,6 +119,10 @@ def rebuild_messages(log_path: str, to_step: int) -> list[dict]:
             tc = pending_calls.pop(0)
             messages.append({"role": "tool", "tool_call_id": tc["id"],
                              "content": e["result"]})
+        elif e["type"] == "steer" and (e.get("step") or 0) <= to_step:
+            # 转向指令当时被注入过历史，重建时也要回到原来的位置
+            messages.append({"role": "user",
+                             "content": f"[runtime] 用户转向指令：{e['content']}"})
     return messages
 
 

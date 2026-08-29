@@ -16,7 +16,7 @@ from pathlib import Path
 WORKSPACE = Path.cwd().resolve()
 
 # 部署校验用：python3 -c "import tools; print(tools.TOOLS_VERSION)"
-TOOLS_VERSION = "v6.3-approval-chat"
+TOOLS_VERSION = "v6.4-agents-swap-steer"
 
 MAX_FILE_LINES = 200     # read_file 截断
 MAX_OUTPUT_CHARS = 4000  # shell 输出截断
@@ -24,9 +24,10 @@ MAX_DIFF_LINES = 60      # edit_file 返回 diff 的截断
 MAX_LIST_ENTRIES = 200   # list_dir 截断
 MAX_GREP_MATCHES = 50    # grep 截断
 MAX_GLOB_RESULTS = 100   # glob 截断
-SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv"}
-# 自我污染防线：agent 的轨迹日志、编辑临时文件不该出现在它自己的视野里
-SKIP_FILES = {"trajectory.jsonl"}
+SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv",
+             ".ecall-swap"}  # 压缩换出目录：观察时隐身，但 read_file 可按路径拉回
+# 自我污染防线：agent 的轨迹日志、编辑临时文件、转向门文件不该出现在它自己的视野里
+SKIP_FILES = {"trajectory.jsonl", ".ecall-steer"}
 SKIP_SUFFIXES = (".ecalltmp",)
 
 
