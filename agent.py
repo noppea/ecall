@@ -49,13 +49,43 @@ _SUBAGENT_TOKENS = 0        # 子代理累计花费（计入父代理的预算�
 _CURRENT_LOG: str | None = None  # 当前活跃轨迹，供 explore 把子代理事件记进同一份日志
 
 
+AGENTS_MD_MAX_CHARS = 2000  # 项目自定义指令的长度上限（保护上下文预算）
+
+
 def build_system_prompt() -> str:
-    """把工作区绝对路径注入系统提示词（会话内常量，不破坏前缀缓存）。"""
-    return (
+    """系统提示词 = 内置原则 + 环境信息 + 项目自定义（AGENTS.md）。
+
+    AGENTS.md 是「声明式提示词 + 长期记忆」的合体：
+    - 声明式：项目级的约定（代码风格、测试命令、禁区）写在文件里，不进代码；
+    - 记忆：模型自己有读写工具，想跨会话记住什么，让它写进 AGENTS.md——
+      「记忆就是一个文件，agent 自己维护」（Claude Code 的 CLAUDE.md 同款思路）。
+    会话开始时读入并冻结进 messages[0]，运行中改了也下个会话才生效——
+    冻结快照保护前缀缓存（改动落在历史中间会让后面的缓存全部失效）。
+    """
+    prompt = (
         SYSTEM_PROMPT
         + f"\n环境信息：你的工作区（当前目录）绝对路径是 {tools.WORKSPACE}；"
           "所有相对路径都基于它，不要再创建与工作区同名的子目录。\n"
     )
+    agents_md = tools.WORKSPACE / "AGENTS.md"
+    if agents_md.exists():
+        content = agents_md.read_text(encoding="utf-8", errors="replace")
+        if len(content) > AGENTS_MD_MAX_CHARS:
+            content = content[:AGENTS_MD_MAX_CHARS] + "\n...（AGENTS.md 超长已截断）"
+        prompt += f"\n项目自定义指令（AGENTS.md）：\n{content}\n"
+    return prompt
+
+
+def _poll_steer() -> str | None:
+    """文件式转向门（steering 的最小实现）：运行中向工作区写入 .ecall-steer，
+    主循环在步边界（安全点）消费它——异步投递、同步消费，消息不插进工具执行中途。"""
+    f = tools.WORKSPACE / ".ecall-steer"
+    try:
+        msg = f.read_text(encoding="utf-8").strip()
+        f.unlink()  # 一次性消息：消费即焚
+        return msg or None
+    except FileNotFoundError:
+        return None
 
 
 def _msg_to_dict(message) -> dict:
