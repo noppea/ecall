@@ -9,13 +9,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 # 工作区即监狱：agent 启动时所在的目录，任何文件操作不许逃出去
 WORKSPACE = Path.cwd().resolve()
 
 # 部署校验用：python3 -c "import tools; print(tools.TOOLS_VERSION)"
-TOOLS_VERSION = "v6.2-explore-subagent"
+TOOLS_VERSION = "v6.3-approval-chat"
 
 MAX_FILE_LINES = 200     # read_file 截断
 MAX_OUTPUT_CHARS = 4000  # shell 输出截断
@@ -278,10 +279,40 @@ def _bwrap_argv(command: str) -> list[str]:
     return argv
 
 
+_APPROVE_ALL = False  # 会话级「都允许」（审批门里按 a）
+
+
+def _approve(command: str) -> bool:
+    """审批门：mutating 命令在没有沙箱兜底时需要人批准。
+
+    安全策略是互补的两层：
+      - 有 bwrap：内核隔离兜底，mutating 命令放心自动执行；
+      - 没 bwrap + 交互式终端：问人（y=允许一次 / a=本会话都允许）；
+      - 没 bwrap + 非交互（管道/评测器）：无处问人，自动放行——
+        headless 场景的诚实取舍，风险靠 _jail 和轨迹审计兜底。
+    门只装在 shell 上的原因：文件写入有 WAL 可以 rewind（有 undo），
+    shell 命令没有 undo——审批的成本要花在没有后悔药的地方。
+    """
+    global _APPROVE_ALL
+    if _APPROVE_ALL or _bwrap_available() or not sys.stdin.isatty():
+        return True
+    try:
+        ans = input(f"\n[审批] mutating 命令且沙箱未启用：\n  {command}\n"
+                    "允许执行？[y=允许一次 / a=本会话都允许 / 其他=拒绝] ")
+    except EOFError:
+        return True
+    if ans.strip().lower() == "a":
+        _APPROVE_ALL = True
+        return True
+    return ans.strip().lower() == "y"
+
+
 def run_shell(command: str, timeout: int = 60) -> str:
     level = _classify(command)
     if level == "dangerous":
         return f"error: 命中危险命令拦截（{command[:60]}）"
+    if level == "mutating" and not _approve(command):
+        return "error: 用户拒绝了这条命令的执行（审批门）"
     sandboxed = _bwrap_available()
     try:
         proc = subprocess.run(
