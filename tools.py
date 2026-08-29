@@ -14,6 +14,9 @@ from pathlib import Path
 # 工作区即监狱：agent 启动时所在的目录，任何文件操作不许逃出去
 WORKSPACE = Path.cwd().resolve()
 
+# 部署校验用：python3 -c "import tools; print(tools.TOOLS_VERSION)"
+TOOLS_VERSION = "v6.1-bwrap-home-tmpfs"
+
 MAX_FILE_LINES = 200     # read_file 截断
 MAX_OUTPUT_CHARS = 4000  # shell 输出截断
 MAX_DIFF_LINES = 60      # edit_file 返回 diff 的截断
@@ -226,20 +229,30 @@ def _bwrap_available() -> bool:
 def _bwrap_argv(command: str) -> list[str]:
     """组装沙箱命令行。
 
-    挂载顺序有讲究：先只读挂根、再用 tmpfs 盖住 /tmp（程序写临时文件的安全垫）、
-    最后把工作区重新挂成可写——bwrap 的挂载按顺序叠加，后挂的盖住先挂的；
-    --bind 的源路径在宿主侧解析，所以评测把临时工作区放在 /tmp 下也照样能挂。
+    挂载顺序有讲究，bwrap 的挂载按顺序叠加、后挂的盖住先挂的：
+      1. --ro-bind / /  根文件系统整体只读（/etc、/usr 摸不得，但可读——
+         工具链和头文件本来就要读系统目录）
+      2. --tmpfs /tmp   盖住真 /tmp，给编译器等一个可写的临时区
+      3. --tmpfs $HOME  盖住家目录——这一步才补上当年「cat ~/... 越狱」的洞：
+         只读挂载挡不住读，tmpfs 让 ~/.ssh、~/.env、别的项目直接消失
+      4. --bind ws ws   唯一的可写缺口：工作区。--bind 的源路径在宿主侧解析，
+         所以工作区即使在 $HOME 或 /tmp 下，也能从被盖住的目录上重新挂出来
     """
     ws = str(WORKSPACE)
-    return ["bwrap",
-            "--ro-bind", "/", "/",     # 根文件系统整体只读：~/、/etc、/usr 全摸不得
-            "--tmpfs", "/tmp",         # 盖住真 /tmp，给编译器等一个可写的临时区
-            "--bind", ws, ws,          # 唯一的可写缺口：工作区
+    argv = ["bwrap",
+            "--ro-bind", "/", "/",
+            "--tmpfs", "/tmp",
+            "--tmpfs", str(Path.home()),
+            "--bind", ws, ws,
             "--proc", "/proc",         # 全新的 proc，看不到宿主机进程
             "--unshare-net",           # 断网：curl/pip install 直接失败
             "--die-with-parent",       # 父进程被杀时沙箱内进程陪葬，不留孤儿
-            "--chdir", ws,
-            "--", "bash", "-c", command]
+            "--chdir", ws]
+    for var in ("ECALL_API_KEY", "OPENAI_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY"):
+        if var in os.environ:
+            argv += ["--unsetenv", var]
+    argv += ["--", "bash", "-c", command]
+    return argv
 
 
 def run_shell(command: str, timeout: int = 60) -> str:
