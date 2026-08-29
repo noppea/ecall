@@ -31,6 +31,23 @@ REPEAT_CALL_LIMIT = 3       # 同一调用重复 N 次判定为振荡
 
 MUTATING_TOOLS = ("write_file", "edit_file")  # 动手前要打 checkpoint 的工具
 
+# —— 子代理：只读探索员 ——
+# 父上下文是宝贵资产（前缀缓存 + token 预算），探索阶段的几十条 grep 输出
+# 不该污染它。子代理像 fork 出的进程：有自己的地址空间（独立 messages）、
+# 权限收缩（只读工具白名单，execute 层强制）、只带回一个返回值（结论摘要）。
+# 白名单不含 explore 自己，套娃在 Schema 和 execute 两层都被堵死。
+EXPLORE_SYSTEM_PROMPT = (
+    "你是 ecall 的只读探索子代理。你的任务是在工作区里查清一个问题并汇报结论。\n"
+    "你只有只读工具（read_file/list_dir/grep/glob），不能修改文件、不能执行命令。\n"
+    "要求：结论要具体——给出相关文件路径、行号、关键代码片段；\n"
+    "如果没找到，明确说没找到，并列出你查过哪些地方。\n"
+)
+EXPLORE_TOOLS = ("read_file", "list_dir", "grep", "glob")  # 只读白名单
+EXPLORE_MAX_STEPS = 15  # 子代理步数预算比父代理小：探索不该比干活还贵
+
+_SUBAGENT_TOKENS = 0        # 子代理累计花费（计入父代理的预算检查，不许隐身）
+_CURRENT_LOG: str | None = None  # 当前活跃轨迹，供 explore 把子代理事件记进同一份日志
+
 
 def build_system_prompt() -> str:
     """把工作区绝对路径注入系统提示词（会话内常量，不破坏前缀缓存）。"""
@@ -69,14 +86,53 @@ def run(task: str, log_path: str | None = None):
         {"role": "user", "content": task},
     ]
     header = {"type": "task", "content": task, "workspace": str(tools.WORKSPACE)}
-    return run_messages(messages, log_path, header=header)
+    answer, tokens, path = run_messages(messages, log_path, header=header)
+    return answer, tokens + _SUBAGENT_TOKENS, path  # 账单含子代理的花费
+
+
+def explore(task: str) -> str:
+    """explore 工具的实现（tools.py 惰性导入这里，绕开循环 import）。
+
+    复用 run_messages 主循环，但换成只读系统提示词 + 只读工具白名单 +
+    更小的步数预算；事件记进父代理的同一份轨迹（带 sub 标记）。
+    """
+    global _SUBAGENT_TOKENS
+    schemas = [s for s in tools.SCHEMAS if s["function"]["name"] in EXPLORE_TOOLS]
+    if not schemas:
+        return "error: 当前模式（mini）没有只读工具，无法派出子代理"
+    print(f"  >>> 子代理出动：{task[:60]}")
+    messages = [
+        {"role": "system", "content":
+            EXPLORE_SYSTEM_PROMPT + f"\n工作区绝对路径：{tools.WORKSPACE}\n"},
+        {"role": "user", "content": task},
+    ]
+    answer, tokens, _ = run_messages(
+        messages, log_path=_CURRENT_LOG,
+        header={"type": "subagent", "content": task},
+        schemas=schemas, allowed_tools=EXPLORE_TOOLS,
+        max_steps=EXPLORE_MAX_STEPS, _sub=True)
+    _SUBAGENT_TOKENS += tokens
+    print(f"  <<< 子代理归来（{tokens} tokens）")
+    return f"[子代理结论，本次探索消耗 {tokens} tokens]\n{answer}"
 
 
 def run_messages(messages: list[dict], log_path: str | None = None,
-                 header: dict | None = None):
-    """从一段已有历史开始/继续跑主循环（fork 时间线也走这里）。"""
+                 header: dict | None = None, schemas: list | None = None,
+                 allowed_tools: tuple | None = None,
+                 max_steps: int | None = None, _sub: bool = False):
+    """从一段已有历史开始/继续跑主循环（fork 时间线、explore 子代理也走这里）。
+
+    schemas/allowed_tools/max_steps 是子代理的权限收缩接口：父代理用默认值，
+    子代理换成只读工具面 + 更小的步数预算。_sub=True 时事件带 sub 标记。
+    """
+    global _CURRENT_LOG
     if log_path is None:
         log_path = _default_log_path()
+    _CURRENT_LOG = log_path
+    if schemas is None:
+        schemas = tools.SCHEMAS
+    if max_steps is None:
+        max_steps = MAX_STEPS
     total_tokens = 0
     consecutive_errors = 0
     warned = False
@@ -84,13 +140,15 @@ def run_messages(messages: list[dict], log_path: str | None = None,
 
     with open(log_path, "a", encoding="utf-8") as log:
         def record(event: dict):
+            if _sub:
+                event["sub"] = True  # 子代理事件：时间旅行重建与评测统计时跳过
             log.write(json.dumps(event, ensure_ascii=False) + "\n")
             log.flush()  # 崩了也不丢最后一条
 
         if header:
             record(header)
 
-        for step in range(1, MAX_STEPS + 1):
+        for step in range(1, max_steps + 1):
             # —— 内存管理：逼近上下文预算就压缩老的工具输出 ——
             messages, events = context.maybe_compress(messages)
             if events:
@@ -98,20 +156,20 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                         "est_tokens": context.estimate_tokens(messages)})
 
             # 预算预警：让模型体面收尾，而不是被硬切断
-            if not warned and MAX_STEPS - step <= WARN_REMAINING:
+            if not warned and max_steps - step <= WARN_REMAINING:
                 messages.append({"role": "user", "content":
                     "[runtime] 步数预算即将耗尽，请停止探索，立即总结进展并给出最终回复。"})
                 warned = True
 
             # —— 思考：把全部历史发给模型。模型无记忆，历史即状态 ——
             try:
-                message, usage = llm.chat(messages, tools.SCHEMAS)
+                message, usage = llm.chat(messages, schemas)
             except llm.ContextOverflow:
                 # 缺页处理：窗口炸了 → 强制压缩 → 重试一次
                 messages, events = context.compress(messages)
                 record({"type": "overflow_compress", "step": step, "events": events})
                 try:
-                    message, usage = llm.chat(messages, tools.SCHEMAS)
+                    message, usage = llm.chat(messages, schemas)
                 except Exception as e:
                     record({"type": "fatal", "step": step, "error": str(e)})
                     return f"模型调用失败（压缩后仍失败）：{e}", total_tokens, log_path
@@ -130,15 +188,17 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                 "est_context": context.estimate_tokens(messages),
             })
 
-            # —— 终止条件④：token 总预算耗尽 ——
-            if total_tokens > MAX_TOTAL_TOKENS:
+            # —— 终止条件④：token 总预算耗尽（子代理的花费也记在这本账上）——
+            if total_tokens + _SUBAGENT_TOKENS > MAX_TOTAL_TOKENS:
                 record({"type": "abort", "reason": "token_budget",
-                        "total_tokens": total_tokens})
+                        "total_tokens": total_tokens,
+                        "subagent_tokens": _SUBAGENT_TOKENS})
                 return f"超出 token 预算（{total_tokens}），任务中止。", total_tokens, log_path
 
             # —— 终止条件①：模型不再调用工具 = 它认为做完了 ——
             if not message.tool_calls:
-                record({"type": "done", "step": step, "total_tokens": total_tokens})
+                record({"type": "done", "step": step, "total_tokens": total_tokens,
+                        "subagent_tokens": _SUBAGENT_TOKENS})
                 return message.content, total_tokens, log_path
 
             # —— 历史只 append、不改写（前缀缓存铁律；压缩是唯一例外，见 context.py）——
@@ -166,7 +226,8 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                         except Exception:
                             pass  # 快照失败不阻塞主流程
                     print(f"[step {step}] {tc.function.name}({tc.function.arguments[:60]}...)")
-                    result = tools.execute(tc.function.name, tc.function.arguments)
+                    result = tools.execute(tc.function.name, tc.function.arguments,
+                                           allowed_tools)
                     record({
                         "type": "tool", "step": step, "name": tc.function.name,
                         "arguments": tc.function.arguments, "result": result,
@@ -186,4 +247,4 @@ def run_messages(messages: list[dict], log_path: str | None = None,
 
         # —— 终止条件②：步数预算耗尽 ——
         record({"type": "abort", "reason": "max_steps"})
-        return f"超出步数预算（{MAX_STEPS}），任务中止。", total_tokens, log_path
+        return f"超出步数预算（{max_steps}），任务中止。", total_tokens, log_path

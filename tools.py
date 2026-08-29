@@ -15,7 +15,7 @@ from pathlib import Path
 WORKSPACE = Path.cwd().resolve()
 
 # 部署校验用：python3 -c "import tools; print(tools.TOOLS_VERSION)"
-TOOLS_VERSION = "v6.1-bwrap-home-tmpfs"
+TOOLS_VERSION = "v6.2-explore-subagent"
 
 MAX_FILE_LINES = 200     # read_file 截断
 MAX_OUTPUT_CHARS = 4000  # shell 输出截断
@@ -188,6 +188,28 @@ def glob_files(pattern: str) -> str:
     return "\n".join(out) or "（无匹配）"
 
 
+# ---------- 子代理：只读探索员 ----------
+
+def explore(task: str) -> str:
+    """派一个只读子代理去探索工作区，只把结论带回父上下文。
+
+    实现在 agent.explore（需要复用主循环）；这里惰性导入绕开循环 import：
+    agent 依赖 tools 的工具集，tools 的这个工具又依赖 agent 的主循环。
+    """
+    import agent
+    return agent.explore(task)
+
+
+# ---------- shell：风险分级（外层闸门）+ bwrap 沙箱（内核级监狱） ----------
+#
+# 故事弧闭环：实验发现 _jail 关不住 shell 通道（模型一句 cat ~/... 就越狱了），
+# v2 只能先用三级风险分级缓解：readonly 放行 / mutating 放行但标注 / dangerous 拒绝。
+# v6 用内核机制补上这个缺口：bubblewrap 起一个用户命名空间，把根文件系统
+# 只读挂载、只把工作区重新挂成可写、断网——这次不是「劝模型别越界」，
+# 是内核让它越不出去。风险分级保留为外层闸门（沙箱前就把 dangerous 拒掉）。
+# 沙箱是可选能力：ECALL_BWRAP=1 且 bwrap 可用才启用，否则降级为裸执行；
+# 运行模式（bwrap/host）标注进每条返回，轨迹可审计。
+
 READONLY_CMDS = {"ls", "cat", "pwd", "head", "tail", "wc", "grep", "rg", "find",
                  "echo", "which", "file", "stat", "tree", "diff", "env", "date"}
 DANGEROUS_PATTERNS = ("rm -rf", "rm -fr", "mkfs", "shutdown", "reboot", ":(){",
@@ -237,6 +259,7 @@ def _bwrap_argv(command: str) -> list[str]:
          只读挂载挡不住读，tmpfs 让 ~/.ssh、~/.env、别的项目直接消失
       4. --bind ws ws   唯一的可写缺口：工作区。--bind 的源路径在宿主侧解析，
          所以工作区即使在 $HOME 或 /tmp 下，也能从被盖住的目录上重新挂出来
+    另外把 API key 类环境变量摘掉：沙箱里 env 也看不到密钥。
     """
     ws = str(WORKSPACE)
     argv = ["bwrap",
@@ -334,6 +357,18 @@ SCHEMAS = [
             "required": ["pattern"],
         }}},
     {"type": "function", "function": {
+        "name": "explore",
+        "description": ("把「摸清代码结构」外包给一个只读子代理：它在独立上下文里自由检索，"
+                        "只把结论（文件路径、行号、关键片段）返回给你，"
+                        "探索过程不占用你的上下文。适合动手前先了解项目结构；"
+                        "它不能修改文件，别派它去干活"),
+        "parameters": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"task": {"type": "string",
+                                    "description": "要查清的问题，描述越具体结论越准"}},
+            "required": ["task"],
+        }}},
+    {"type": "function", "function": {
         "name": "run_shell",
         "description": ("在工作区内执行 shell 命令（有超时、截断与风险分级；"
                         "沙箱模式下文件系统只读且断网）"),
@@ -358,11 +393,18 @@ HANDLERS = {
     "grep": lambda a: grep(a["pattern"], a.get("path", ".")),
     "glob": lambda a: glob_files(a["pattern"]),
     "run_shell": lambda a: run_shell(a["command"], a.get("timeout", 60)),
+    "explore": lambda a: explore(a["task"]),
 }
 
 
-def execute(name: str, arguments_json: str) -> str:
-    """陷入处理：校验 → 执行 → 异常兜底。任何失败都变成文本喂回模型。"""
+def execute(name: str, arguments_json: str, allowed: tuple | None = None) -> str:
+    """陷入处理：权限检查 → 校验 → 执行 → 异常兜底。任何失败都变成文本喂回模型。
+
+    allowed 是子代理的权限收缩：即使模型幻觉出白名单外的工具调用，
+    也在这一层被拦住——Schema 只是建议，这里才是强制。
+    """
+    if allowed is not None and name not in allowed:
+        return f"error: 当前上下文不允许使用工具 {name}"
     handler = HANDLERS.get(name)
     if handler is None:
         return f"error: 未知工具 {name}"

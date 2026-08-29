@@ -61,9 +61,13 @@ def run_one(task: dict, config: str, rep: int) -> dict:
         if log_file.exists():
             for line in log_file.read_text(encoding="utf-8").splitlines():
                 e = json.loads(line)
+                if e.get("sub"):
+                    continue  # 子代理事件：步数编号独立，不参与父代理统计
                 steps = max(steps, e.get("step") or 0)
                 if e["type"] in ("done", "abort"):
-                    tokens = e.get("total_tokens") or tokens
+                    # 账单 = 父代理花费 + 子代理花费（不许隐身）
+                    tokens = ((e.get("total_tokens") or 0)
+                              + (e.get("subagent_tokens") or 0)) or tokens
 
         return {"ts": int(t0), "task": task["id"], "config": config, "rep": rep,
                 "passed": int(passed), "steps": steps, "tokens": tokens,

@@ -33,6 +33,13 @@ def print_replay(log_path: str) -> None:
     """把轨迹打印成可读的时间线（视频素材也靠它）。"""
     for e in load_events(log_path):
         t = e["type"]
+        if t == "subagent":
+            print(f"=== 子代理出动: {e['content'][:80]}")
+            continue
+        if e.get("sub"):
+            if t == "done":
+                print(f"    (子代理收尾：{e.get('total_tokens')} tokens)")
+            continue  # 子代理的过程事件不刷屏，结论在父代理的 explore 结果里
         if t == "task":
             print(f"=== 任务: {e['content']}\n    工作区: {e.get('workspace')}")
         elif t == "fork":
@@ -96,10 +103,14 @@ def rebuild_messages(log_path: str, to_step: int) -> list[dict]:
     ]
     pending_calls: list[dict] = []  # 上一条 assistant 消息发出的、还没配对结果的调用
     for e in events:
+        if e.get("sub"):
+            continue  # 子代理事件不属于父历史：父上下文里只有 explore 的结论
         if e["type"] == "llm" and (e.get("step") or 0) <= to_step:
             msg = {"role": "assistant", "content": e.get("content") or ""}
             pending_calls = e.get("tool_calls") or []
             if pending_calls:
+                # 必须拷贝：下面配对时 pop(0) 会原地修改这个列表，
+                # 不拷贝的话消息里的 tool_calls 会被一起掏空（别名陷阱）
                 msg["tool_calls"] = list(pending_calls)
             messages.append(msg)
         elif e["type"] == "tool" and pending_calls:
