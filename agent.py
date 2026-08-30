@@ -323,6 +323,20 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                     print(f"[step {step}] {tc.function.name}({tc.function.arguments[:60]}...)")
                     result = tools.execute(tc.function.name, tc.function.arguments,
                                            allowed_tools)
+                    # digest 关联：把笔记贴到最近一条工具观察上——
+                    # compress 换出它时，这条笔记将成为占位符（见 context.py）。
+                    # 只改消息对象的私有标注，不进轨迹、不改 role 内容，
+                    # 对前缀缓存零影响
+                    if tc.function.name == "digest" and not result.startswith("error"):
+                        try:
+                            note = json.loads(tc.function.arguments)["summary"]
+                            note = note.strip()[:tools.DIGEST_MAX_CHARS]
+                            for m in reversed(messages):
+                                if m.get("role") == "tool":
+                                    m["_digest"] = note
+                                    break
+                        except Exception:
+                            pass  # 笔记关联失败不阻塞主流程
                     # todo 回显：模型写给自己的外部记忆，钉在上下文最新的位置——
                     # 追加在尾部，不改写历史，前缀缓存不受影响
                     if tools.TODO:

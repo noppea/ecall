@@ -59,10 +59,13 @@ def compress(messages):
         if len(content) > MIN_COMPRESS_CHARS:
             first_line = content.splitlines()[0] if content else ""
             swap_path = _swap_out(content)
-            messages[i]["content"] = (
-                f"[已压缩] 原工具输出 {len(content)} 字符，已换出到 {swap_path}"
-                f"（需要细节可 read_file 拉回）；首行：{first_line[:80]}"
-            )
+            # 占位符二选一：模型当场写的笔记（聪明，知道重点）优先；
+            # 没有笔记退回首行规则（笨但零成本）。原文在 swap 里，两路都可拉回。
+            note = messages[i].get("_digest")
+            placeholder = (f"[已压缩] 原工具输出 {len(content)} 字符，已换出到 {swap_path}"
+                           f"（需要细节可 read_file 拉回）")
+            placeholder += f"；模型笔记：{note}" if note else f"；首行：{first_line[:80]}"
+            messages[i]["content"] = placeholder
             events.append({"index": i, "original_chars": len(content),
                            "swap": swap_path})
     return messages, events

@@ -46,6 +46,8 @@ def run_one(task: dict, config: str, model: str, rep: int) -> dict:
         env = dict(os.environ, ECALL_LOG=str(log_file))
         if config == "mini":
             env["ECALL_MINI"] = "1"
+        if config == "nodigest":
+            env["ECALL_NO_DIGEST"] = "1"  # digest 消融组：压缩退回纯首行规则
 
         t0 = time.time()
         proc = subprocess.run(
@@ -86,7 +88,8 @@ def run_one(task: dict, config: str, model: str, rep: int) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("-c", "--config", default="full", choices=["full", "mini"])
+    ap.add_argument("-c", "--config", default="full",
+                    choices=["full", "mini", "nodigest"])
     ap.add_argument("-r", "--repeat", type=int, default=3)
     ap.add_argument("-m", "--model", default="deepseek",
                     help="模型标签，只写进 CSV 用于分组统计；实际连哪家由 ECALL_BASE_URL/ECALL_API_KEY 决定")

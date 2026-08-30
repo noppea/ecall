@@ -72,7 +72,8 @@ python3 main.py fork .ecall-log.jsonl -s 12    # 从第 12 步分叉，换个方
 | 子系统 | 实现 | 文件 |
 |---|---|---|
 | 主循环 | think → tool_call → observe 循环；4 个终止条件（任务完成 / 步数 / 连续错误 / token 预算）；振荡检测（同一调用重复 3 次拦截） | `agent.py` |
-| 工具层 | 9 个工具：read/write/edit_file、list_dir、grep、glob、run_shell、explore、todo；工作区 jail；edit 两级匹配（精确→行级模糊）+ 诊断回执 | `tools.py` |
+| 工具层 | 11 个工具：read/write/edit_file、list_dir、grep、glob、run_shell、explore、explore_batch、todo、digest；工作区 jail；edit 两级匹配 + 诊断回执 | `tools.py` |
+| digest | 模型读完大输出后当场写笔记；压缩换出时笔记取代首行成为占位符，原文留指针可拉回——生成时同步自我压缩 | `tools.py` + `context.py` |
 | todo | 模型自维护的任务清单（全量替换语义），每步回显在最新工具结果尾部——对抗上下文漂移的外部记忆 | `tools.py` |
 | 沙盒 | bubblewrap：只读根挂载 + 临时 /tmp 与 $HOME + 断网 + 环境变量洗白（API key 不进沙盒）；不可用时自动降级 host 并标注 | `tools.py` |
 | 审批门 | 变更型 shell 命令在无沙盒且交互式时需人工确认（y/a）；非交互自动放行不阻塞评测 | `tools.py` |

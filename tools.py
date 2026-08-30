@@ -16,7 +16,7 @@ from pathlib import Path
 WORKSPACE = Path.cwd().resolve()
 
 # 部署校验用：python3 -c "import tools; print(tools.TOOLS_VERSION)"
-TOOLS_VERSION = "v6.9-parallel-explore"
+TOOLS_VERSION = "v7.0-digest"
 
 MAX_FILE_LINES = 200     # read_file 截断
 MAX_OUTPUT_CHARS = 4000  # shell 输出截断
@@ -448,6 +448,17 @@ SCHEMAS = [
                     "required": ["content", "status"]}}},
             "required": ["items"]}}},
     {"type": "function", "function": {
+        "name": "digest",
+        "description": ("读完一大段工具输出后，为它写一条简短笔记（要点、关键行号、结论）。"
+                        "上下文压缩时这条笔记将取代臃肿的原文成为你的记忆；"
+                        "原文不会丢失——它被换出到磁盘，需要细节仍可 read_file 拉回。"
+                        "请在读完重要的大输出后立即调用"),
+        "parameters": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"summary": {"type": "string",
+                                       "description": "你的笔记，200 字以内"}},
+            "required": ["summary"]}}},
+    {"type": "function", "function": {
         "name": "run_shell",
         "description": ("在工作区内执行 shell 命令（有超时、截断与风险分级；"
                         "沙箱模式下文件系统只读且断网）"),
@@ -464,6 +475,11 @@ SCHEMAS = [
 if os.environ.get("ECALL_MINI") == "1":
     SCHEMAS = [s for s in SCHEMAS if s["function"]["name"] == "run_shell"]
 
+# digest 消融组（对照实验用）：摘掉 digest 工具，压缩退回纯首行规则。
+# 两组共享同一套 swap 基建，唯一变量是「占位符由谁写」——干净的因子实验
+if os.environ.get("ECALL_NO_DIGEST") == "1":
+    SCHEMAS = [s for s in SCHEMAS if s["function"]["name"] != "digest"]
+
 HANDLERS = {
     "read_file": lambda a: read_file(a["path"]),
     "write_file": lambda a: write_file(a["path"], a["content"]),
@@ -475,7 +491,27 @@ HANDLERS = {
     "explore": lambda a: explore(a["task"]),
     "explore_batch": lambda a: explore_batch(a["tasks"]),
     "todo": lambda a: todo(a["items"]),
+    "digest": lambda a: digest(a["summary"]),
 }
+
+
+# ---------- digest：生成时同步产笔记（即时自我压缩） ----------
+# 设计对偶：现有压缩是「runtime 规则触发的换出」——无损但占位符笨（首行预览
+# 经常不是重点）；LLM 摘要派聪明但有损且贵（独立的摘要调用 + 幻觉风险）。
+# digest 卡在两者中间的甜点位：笔记由「正在读原文的模型」当场写（它知道
+# 重点在哪），原文照旧换出到 swap 留指针（笔记写砸了还能拉回），
+# 且零额外 API 调用（笔记是顺便产的，不是另开一次请求）。
+# 失败保险：没有 digest 的观察仍退回首行规则，机制向下兼容。
+
+DIGEST_MAX_CHARS = 500  # 笔记不是第二份原文：超长直接截断
+
+
+def digest(summary: str) -> str:
+    """校验并确认一条笔记；把它贴到哪条观察上由主循环完成
+    （tools 层不知道消息历史，关联发生在 agent.py 的工具循环里）。"""
+    if not summary or not summary.strip():
+        return "error: 笔记不能为空"
+    return "ok: 笔记已记录（上下文压缩时将作为该段内容的占位符）"
 
 
 # ---------- todo：模型写给自己的外部记忆 ----------
