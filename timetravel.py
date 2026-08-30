@@ -98,16 +98,18 @@ def rebuild_messages(log_path: str, to_step: int) -> list[dict]:
     tool 事件没有记录 tool_call_id，按顺序和上面 llm 事件的 tool_calls 配对。
     """
     events = load_events(log_path)
-    task = next(e["content"] for e in events if e["type"] == "task")
-    messages = [
-        {"role": "system", "content": agent.build_system_prompt()},
-        {"role": "user", "content": task},
-    ]
+    messages = [{"role": "system", "content": agent.build_system_prompt()}]
     pending_calls: list[dict] = []  # 上一条 assistant 消息发出的、还没配对结果的调用
     for e in events:
         if e.get("sub"):
             continue  # 子代理事件不属于父历史：父上下文里只有 explore 的结论
-        if e["type"] == "llm" and (e.get("step") or 0) <= to_step:
+        if e["type"] == "llm" and (e.get("step") or 0) > to_step:
+            break  # 越过分叉点：之后的事件（含后续轮次的 task header）都不属于这条时间线
+        if e["type"] == "task":
+            # 多轮会话里每轮一条 task header = 一条用户消息；
+            # 单轮轨迹只有一条，语义不变
+            messages.append({"role": "user", "content": e["content"]})
+        elif e["type"] == "llm":
             msg = {"role": "assistant", "content": e.get("content") or ""}
             pending_calls = e.get("tool_calls") or []
             if pending_calls:
