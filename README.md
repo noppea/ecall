@@ -46,7 +46,7 @@ python3 main.py fork .ecall-log.jsonl -s 12    # 从第 12 步分叉，换个方
 | 沙盒 | bubblewrap：只读根挂载 + 临时 /tmp 与 $HOME + 断网 + 环境变量洗白（API key 不进沙盒）；不可用时自动降级 host 并标注 | `tools.py` |
 | 审批门 | 变更型 shell 命令在无沙盒且交互式时需人工确认（y/a）；非交互自动放行不阻塞评测 | `tools.py` |
 | 上下文管理 | 60k token 预算；旧工具输出压缩并**内容寻址换出**到 `.ecall-swap/`（git 式去重），模型可按需 read_file 拉回 | `context.py` |
-| 子代理 | explore 只读探索员：独立上下文、只读白名单（execute 层强制）、递归套娃双层封堵、token 计入父账单 | `agent.py` |
+| 子代理 | explore 只读探索员 + explore_batch 并行扇出（≤4）：独立上下文、只读白名单（execute 层强制）、递归套娃双层封堵、token 计入父账单 | `agent.py` |
 | 持久化 | 全量事件轨迹（JSONL）+ 文件级 WAL；轨迹是 replay/rewind/fork/评测的唯一事实来源 | `agent.py` |
 | 时间旅行 | replay 回放、rewind 逆放 WAL 回滚工作区、fork 从任意历史点分叉续跑、chat --resume 会话恢复 | `timetravel.py` |
 | 流式传输 | SSE 默认开启，增量合并 tool_call 分片；`ECALL_NO_STREAM=1` 一键回退 | `llm.py` |
