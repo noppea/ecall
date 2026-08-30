@@ -24,10 +24,10 @@ TASKS_FILE = Path(__file__).parent / "tasks.json"
 LOG_DIR = Path(__file__).parent / "logs"
 RESULTS_CSV = Path(__file__).parent / "results.csv"
 
-COLUMNS = ["ts", "task", "config", "rep", "passed", "steps", "tokens", "wall_s", "log"]
+COLUMNS = ["ts", "task", "config", "model", "rep", "passed", "steps", "tokens", "wall_s", "log"]
 
 
-def run_one(task: dict, config: str, rep: int) -> dict:
+def run_one(task: dict, config: str, model: str, rep: int) -> dict:
     """在一次性临时目录里跑一个任务，再用 check 命令判定通过与否（exit 0 = PASS）。
 
     临时目录同时也是对 _jail 的实战检验：agent 只能在里面折腾。
@@ -79,7 +79,7 @@ def run_one(task: dict, config: str, rep: int) -> dict:
                    or "\n".join((proc.stdout or "").splitlines()[-5:])
             print(f"  [诊断] agent 秒退，输出末尾：\n  {tail}")
 
-        return {"ts": int(t0), "task": task["id"], "config": config, "rep": rep,
+        return {"ts": int(t0), "task": task["id"], "config": config, "model": model, "rep": rep,
                 "passed": int(passed), "steps": steps, "tokens": tokens,
                 "wall_s": round(wall, 1), "log": log_file.name}
 
@@ -88,6 +88,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("-c", "--config", default="full", choices=["full", "mini"])
     ap.add_argument("-r", "--repeat", type=int, default=3)
+    ap.add_argument("-m", "--model", default="deepseek",
+                    help="模型标签，只写进 CSV 用于分组统计；实际连哪家由 ECALL_BASE_URL/ECALL_API_KEY 决定")
     args = ap.parse_args()
 
     tasks = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
@@ -100,17 +102,17 @@ def main() -> None:
             writer.writeheader()
         for task in tasks:
             for rep in range(1, args.repeat + 1):
-                row = run_one(task, args.config, rep)
+                row = run_one(task, args.config, args.model, rep)
                 writer.writerow(row)
                 f.flush()  # 逐行落盘，跑挂了也不丢已完成的结果
                 new_rows.append(row)
-                print(f"[{args.config}] {task['id']} #{rep}: "
+                print(f"[{args.config}|{args.model}] {task['id']} #{rep}: "
                       f"{'PASS' if row['passed'] else 'FAIL'} "
                       f"({row['steps']} 步, {row['tokens']} token, {row['wall_s']}s)")
 
     n = len(new_rows)
     passes = sum(r["passed"] for r in new_rows)
-    print(f"\n== {args.config} 汇总 ==")
+    print(f"\n== {args.config}|{args.model} 汇总 ==")
     print(f"pass 率: {passes}/{n} = {passes / n:.0%}")
     print(f"token 中位数: {statistics.median(r['tokens'] for r in new_rows):.0f}")
     print(f"步数中位数: {statistics.median(r['steps'] for r in new_rows):.0f}")
