@@ -90,9 +90,11 @@ def main() -> None:
     ap.add_argument("-r", "--repeat", type=int, default=3)
     ap.add_argument("-m", "--model", default="deepseek",
                     help="模型标签，只写进 CSV 用于分组统计；实际连哪家由 ECALL_BASE_URL/ECALL_API_KEY 决定")
+    ap.add_argument("-t", "--tasks", default=str(TASKS_FILE),
+                    help="任务集 JSON，默认 tasks.json；传 tasks_hard.json 跑大任务集")
     args = ap.parse_args()
 
-    tasks = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
+    tasks = json.loads(Path(args.tasks).read_text(encoding="utf-8"))
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     new_rows = []
