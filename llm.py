@@ -3,10 +3,6 @@
 换模型 = 换三个环境变量，代码一行不动（模型是可替换部件）。
 错误分三类处理：fatal（别重试）/ overflow（上抛给上层压缩）/ transient（退避重试）。
 
-传输层切换为流式（SSE）。对上层完全透明——聚合器把增量拼成与非流式
-一模一样的 message 对象，agent.py 下游零改动；on_token 回调把内容增量实时
-透给终端（演示时观众看到「思考的过程」，而不是 30 秒死屏）。
-ECALL_NO_STREAM=1 可一键回退到老的非流式路径（急停开关）。
 """
 import os
 import time
@@ -30,6 +26,12 @@ class FatalConfigError(Exception):
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
+        missing = [k for k in ("ECALL_BASE_URL", "ECALL_API_KEY", "ECALL_MODEL")
+                   if not os.environ.get(k)]
+        if missing:
+            raise FatalConfigError(
+                f"缺少环境变量：{', '.join(missing)}。"
+                f"export 只在当前终端生效；参考 .env.example 配好再 source")
         _client = OpenAI(
             base_url=os.environ["ECALL_BASE_URL"],
             api_key=os.environ["ECALL_API_KEY"],
