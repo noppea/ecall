@@ -27,6 +27,9 @@ python3 main.py "写一个命令行 todo 程序并自测"
 # 交互式多轮（带会话记忆、token 累计显示、流式输出）
 python3 main.py chat
 
+# 崩溃/退出后从轨迹恢复会话，接着聊
+python3 main.py chat --resume
+
 # 时间旅行
 python3 main.py replay .ecall-log.jsonl        # 回放轨迹
 python3 main.py rewind .ecall-log.jsonl -s 12  # 把工作区回滚到第 12 步
@@ -45,7 +48,7 @@ python3 main.py fork .ecall-log.jsonl -s 12    # 从第 12 步分叉，换个方
 | 上下文管理 | 60k token 预算；旧工具输出压缩并**内容寻址换出**到 `.ecall-swap/`（git 式去重），模型可按需 read_file 拉回 | `context.py` |
 | 子代理 | explore 只读探索员：独立上下文、只读白名单（execute 层强制）、递归套娃双层封堵、token 计入父账单 | `agent.py` |
 | 持久化 | 全量事件轨迹（JSONL）+ 文件级 WAL；轨迹是 replay/rewind/fork/评测的唯一事实来源 | `agent.py` |
-| 时间旅行 | replay 回放、rewind 逆放 WAL 回滚工作区、fork 从任意历史点分叉续跑 | `timetravel.py` |
+| 时间旅行 | replay 回放、rewind 逆放 WAL 回滚工作区、fork 从任意历史点分叉续跑、chat --resume 会话恢复 | `timetravel.py` |
 | 流式传输 | SSE 默认开启，增量合并 tool_call 分片；`ECALL_NO_STREAM=1` 一键回退 | `llm.py` |
 | 项目记忆 | AGENTS.md 声明式项目指令（会话开始时冻结注入，保护前缀缓存） | `agent.py` |
 | 中途干预 | 运行中写 `.ecall-steer` 文件，在步边界注入一条用户消息（消费即焚） | `agent.py` |
