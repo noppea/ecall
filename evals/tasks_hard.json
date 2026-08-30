@@ -1,0 +1,42 @@
+[
+  {
+    "id": "extract-config",
+    "prompt": "这个工作区是一个小型数据处理项目。现在配置常量（TIMEOUT、RETRIES、BATCH_SIZE）硬编码散布在多个 .py 文件里。请把它们统一收拢到一个新的 config.py 模块，其余文件改为从 config 导入，数值保持与原来一致。改完后运行 python3 main.py 确认程序输出与之前相同（应打印 DONE）。",
+    "files": {
+      "main.py": "from pipeline import run\nif __name__ == '__main__':\n    run()\n",
+      "pipeline.py": "import fetcher, processor\n\ndef run():\n    data = fetcher.fetch()\n    out = processor.process(data)\n    print(f'processed={out}')\n    print('DONE')\n",
+      "fetcher.py": "TIMEOUT = 30\nRETRIES = 3\n\ndef fetch():\n    # 模拟抓取：真实实现会用 TIMEOUT/RETRIES 发请求\n    return [1, 2, 3, 4][:RETRIES + 1]\n",
+      "processor.py": "BATCH_SIZE = 2\n\ndef process(data):\n    total = 0\n    for i in range(0, len(data), BATCH_SIZE):\n        total += sum(data[i:i + BATCH_SIZE])\n    return total\n",
+      "util.py": "TIMEOUT = 30  # fetcher 里也有一份，历史遗留\n\ndef timeout_limit():\n    return TIMEOUT\n"
+    },
+    "check": "python3 main.py | grep -q DONE && test -f config.py && ! grep -rn '^TIMEOUT = ' fetcher.py util.py && ! grep -rn '^RETRIES = ' fetcher.py && ! grep -rn '^BATCH_SIZE = ' processor.py && python3 -c \"import config; assert config.TIMEOUT==30 and config.RETRIES==3 and config.BATCH_SIZE==2\""
+  },
+  {
+    "id": "fix-test-suite",
+    "prompt": "这个项目自带 unittest 测试套件（tests/ 目录），当前有失败的测试。请运行测试套件定位失败的根因，修复 src/ 下的实现代码（不要修改测试），使 python3 -m unittest discover -s tests 全部通过。",
+    "files": {
+      "src/cart.py": "class Cart:\n    def __init__(self):\n        self.items = []\n\n    def add(self, name, price, qty=1):\n        self.items.append((name, price, qty))\n\n    def total(self):\n        # BUG: 数量没乘进去\n        return sum(price for _, price, _ in self.items)\n\n    def discount_total(self, rate):\n        return self.total() * (1 - rate)\n",
+      "src/__init__.py": "",
+      "tests/test_cart.py": "import sys, os\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))\nimport unittest\nfrom src.cart import Cart\n\nclass TestCart(unittest.TestCase):\n    def test_single(self):\n        c = Cart(); c.add('apple', 3)\n        self.assertEqual(c.total(), 3)\n\n    def test_quantity(self):\n        c = Cart(); c.add('apple', 3, qty=4)\n        self.assertEqual(c.total(), 12)\n\n    def test_discount(self):\n        c = Cart(); c.add('book', 100, qty=2)\n        self.assertEqual(c.discount_total(0.1), 180)\n\nif __name__ == '__main__':\n    unittest.main()\n"
+    },
+    "check": "python3 -m unittest discover -s tests > /dev/null 2>&1"
+  },
+  {
+    "id": "add-middleware",
+    "prompt": "这是一个零依赖的迷你 WSGI 风格 web 框架（app.py / server.py / handlers.py）。请为它增加中间件支持：App 类新增 use(middleware) 方法，middleware 是形如 def mw(request, next_handler) -> response 的函数，按注册顺序嵌套执行；并新增 demo.py 演示两个中间件（一个记录日志打印到 stdout，一个给响应 body 追加签名行）。运行 python3 demo.py 应依次打印两个中间件的日志并输出含签名行 SIGN=ecall 的响应。",
+    "files": {
+      "app.py": "class Request:\n    def __init__(self, path):\n        self.path = path\n\nclass Response:\n    def __init__(self, body=''):\n        self.body = body\n\nclass App:\n    def __init__(self):\n        self.routes = {}\n\n    def route(self, path):\n        def deco(fn):\n            self.routes[path] = fn\n            return fn\n        return deco\n\n    def handle(self, request):\n        handler = self.routes.get(request.path)\n        if handler is None:\n            return Response('404')\n        return handler(request)\n",
+      "handlers.py": "from app import Response\n\ndef index(request):\n    return Response('hello')\n",
+      "server.py": "from app import App, Request\nfrom handlers import index\n\ndef make_app():\n    app = App()\n    app.route('/')(index)\n    return app\n\nif __name__ == '__main__':\n    app = make_app()\n    print(app.handle(Request('/')).body)\n"
+    },
+    "check": "python3 demo.py 2>&1 | grep -q SIGN=ecall && python3 -c \"from app import App; assert hasattr(App, 'use')\""
+  },
+  {
+    "id": "log-archaeology",
+    "prompt": "gen_log.py 是一个日志生成器：先运行 python3 gen_log.py 生成 app.log（约 2000 行结构化日志，格式：时间戳 级别 组件 消息）。这个服务有偶发故障，请写一个 analyze.py，扫描日志找出 ERROR 数量最多的组件，打印一行报告，格式为 WORST=<组件名> COUNT=<次数>。运行 python3 analyze.py 验证。",
+    "files": {
+      "gen_log.py": "import random\nrandom.seed(42)\ncomponents = ['auth', 'db', 'cache', 'api', 'worker']\nlines = []\nfor i in range(2000):\n    comp = random.choice(components)\n    level = 'INFO'\n    msg = 'ok'\n    if comp == 'db' and random.random() < 0.02:\n        level, msg = 'ERROR', 'deadlock detected'\n    elif comp != 'db' and random.random() < 0.005:\n        level, msg = 'ERROR', 'transient failure'\n    lines.append(f'2026-08-01T{i//60:02d}:{i%60:02d}:00 {level} {comp} {msg}')\nopen('app.log', 'w').write('\\n'.join(lines) + '\\n')\n"
+    },
+    "check": "python3 analyze.py | grep -q 'WORST=db COUNT='"
+  }
+]

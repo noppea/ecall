@@ -1,0 +1,14 @@
+[
+  {
+    "id": "kernel-census",
+    "prompt": "这个工作区里的 kernel/ 是一个真实的 Rust 操作系统内核仓库。请通读它的代码，完成一份普查报告，写到工作区根目录的 report.txt 中。报告必须恰好三行，格式严格如下：\nUNSAFE=<仓库所有 .rs 文件中 unsafe 关键字出现总次数>\nMODS=<src/ 目录直接子级中 .rs 文件与目录的总数>\nARCHS=<仓库支持的 CPU 架构数量，从代码与构建脚本判断>\n只写这三行，不要其他内容。",
+    "copy_dir": "fixtures/kernel",
+    "check": "test -f report.txt && grep -q '^UNSAFE=' report.txt && grep -q '^MODS=' report.txt && grep -q '^ARCHS=' report.txt && python3 -c \"\nimport re, subprocess\nlines = dict(l.split('=', 1) for l in open('report.txt').read().splitlines() if '=' in l)\nn = int(lines['UNSAFE'])\nref = subprocess.run(['grep','-roh','unsafe','--include=*.rs','.'], capture_output=True, text=True).stdout.count('unsafe')\nassert abs(n - ref) <= max(2, ref // 10), f'UNSAFE {n} vs ref {ref}'\n\""
+  },
+  {
+    "id": "kernel-doc",
+    "prompt": "这个工作区里的 kernel/ 是一个真实的 Rust 操作系统内核仓库。请通读代码后写一份架构文档到工作区根目录的 ARCH.md，必须包含这四个小节标题（每个标题单独成行）：\n## 启动流程\n## 内存管理\n## 任务调度\n## 系统调用\n每个小节下用代码里的真实模块名和函数名描述（不允许泛泛而谈）。",
+    "copy_dir": "fixtures/kernel",
+    "check": "test -f ARCH.md && grep -q '^## 启动流程' ARCH.md && grep -q '^## 内存管理' ARCH.md && grep -q '^## 任务调度' ARCH.md && grep -q '^## 系统调用' ARCH.md && test $(wc -c < ARCH.md) -gt 1500"
+  }
+]
