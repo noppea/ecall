@@ -26,9 +26,12 @@ SYSTEM_PROMPT = (
     "（结论、关键行号）；上下文压缩时，你的笔记会取代原文成为你的记忆。\n"
 )
 
-MAX_STEPS = 30              # 终止条件②：步数预算
+# 预算三件套全部环境变量化：默认值是分钟级任务的标定，
+# 长程实验用 ECALL_MAX_STEPS / ECALL_MAX_TOTAL_TOKENS 放宽——
+# 实验配置进环境不进源码（与 ECALL_MAX_CONTEXT 同一原则）
+MAX_STEPS = int(os.environ.get("ECALL_MAX_STEPS", 30))  # 终止条件②：步数预算
 MAX_CONSECUTIVE_ERRORS = 5  # 终止条件③：连续错误预算
-MAX_TOTAL_TOKENS = 200_000  # 终止条件④：token 总预算（整个任务的累计花费）
+MAX_TOTAL_TOKENS = int(os.environ.get("ECALL_MAX_TOTAL_TOKENS", 200_000))  # 终止条件④：token 总预算
 WARN_REMAINING = 3          # 剩余 3 步时提醒模型收尾
 REPEAT_CALL_LIMIT = 3       # 同一调用重复 N 次判定为振荡
 
@@ -48,7 +51,9 @@ EXPLORE_SYSTEM_PROMPT = (
     "如果没找到，明确说没找到，并列出你查过哪些地方。\n"
 )
 EXPLORE_TOOLS = ("read_file", "list_dir", "grep", "glob")  # 只读白名单
-EXPLORE_MAX_STEPS = 15  # 子代理步数预算比父代理小：探索不该比干活还贵
+# 子代理步数预算比父代理小：探索不该比干活还贵。
+# 实测教训：15 步对内核级仓库太浅（子代理集体超预算，父代理被迫亲自下海）
+EXPLORE_MAX_STEPS = int(os.environ.get("ECALL_EXPLORE_MAX_STEPS", 15))
 
 _SUBAGENT_TOKENS = 0        # 子代理累计花费（计入父代理的预算检查，不许隐身）
 _CURRENT_LOG: str | None = None  # 当前活跃轨迹，供 explore 把子代理事件记进同一份日志
