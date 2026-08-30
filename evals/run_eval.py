@@ -42,6 +42,11 @@ def run_one(task: dict, config: str, model: str, rep: int) -> dict:
             p = Path(ws) / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
+        # 大任务 fixture：整个目录树拷进来（比如一个真实内核仓库）
+        if task.get("copy_dir"):
+            import shutil
+            src = (Path(__file__).parent / task["copy_dir"]).resolve()
+            shutil.copytree(src, Path(ws) / src.name)
 
         env = dict(os.environ, ECALL_LOG=str(log_file))
         if config == "mini":
