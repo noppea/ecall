@@ -16,7 +16,7 @@ from pathlib import Path
 WORKSPACE = Path.cwd().resolve()
 
 # 部署校验用：python3 -c "import tools; print(tools.TOOLS_VERSION)"
-TOOLS_VERSION = "v6.8-resume"
+TOOLS_VERSION = "v6.9-parallel-explore"
 
 MAX_FILE_LINES = 200     # read_file 截断
 MAX_OUTPUT_CHARS = 4000  # shell 输出截断
@@ -208,6 +208,16 @@ def explore(task: str) -> str:
     """
     import agent
     return agent.explore(task)
+
+
+def explore_batch(tasks: list) -> str:
+    """并行派出多个只读子代理（实现在 agent.explore_batch，理由同 explore）。
+
+    为什么并行只给只读代理：写操作并行 = 文件冲突地狱，
+    只读代理之间没有共享可变状态——读者-写者问题的对称性。
+    """
+    import agent
+    return agent.explore_batch(tasks)
 
 
 # ---------- shell：风险分级（外层闸门）+ bwrap 沙箱（内核级监狱） ----------
@@ -409,6 +419,18 @@ SCHEMAS = [
             "required": ["task"],
         }}},
     {"type": "function", "function": {
+        "name": "explore_batch",
+        "description": ("并行派出多个只读探索子代理（最多 4 个），各自独立查一个问题，"
+                        "结论汇总返回。适合需要同时摸清多个模块/多条线索的场景；"
+                        "只读并行无冲突，但它们不能修改文件"),
+        "parameters": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"tasks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "要并行查清的问题列表，每个描述越具体结论越准"}},
+            "required": ["tasks"]}}},
+    {"type": "function", "function": {
         "name": "todo",
         "description": ("维护你自己的任务清单（全量替换）。长任务开始时拆解步骤写进来，"
                         "每完成一项就把状态更新为 done——上下文会被压缩、注意力会漂移，"
@@ -451,6 +473,7 @@ HANDLERS = {
     "glob": lambda a: glob_files(a["pattern"]),
     "run_shell": lambda a: run_shell(a["command"], a.get("timeout", 60)),
     "explore": lambda a: explore(a["task"]),
+    "explore_batch": lambda a: explore_batch(a["tasks"]),
     "todo": lambda a: todo(a["items"]),
 }
 

@@ -121,17 +121,13 @@ def run(task: str, log_path: str | None = None):
     return answer, tokens + _SUBAGENT_TOKENS, path  # 账单含子代理的花费
 
 
-def explore(task: str) -> str:
-    """explore 工具的实现（tools.py 惰性导入这里，绕开循环 import）。
-
-    复用 run_messages 主循环，但换成只读系统提示词 + 只读工具白名单 +
-    更小的步数预算；事件记进父代理的同一份轨迹（带 sub 标记）。
-    """
-    global _SUBAGENT_TOKENS
+def _explore_one(task: str, tag: str = "") -> tuple[str, int]:
+    """单个只读子代理的完整生命周期，返回 (结论, tokens)——
+    explore 与 explore_batch 共用，token 汇总由调用方在主线程完成（线程安全）。"""
     schemas = [s for s in tools.SCHEMAS if s["function"]["name"] in EXPLORE_TOOLS]
     if not schemas:
-        return "error: 当前模式（mini）没有只读工具，无法派出子代理"
-    print(f"  >>> 子代理出动：{task[:60]}")
+        return "error: 当前模式（mini）没有只读工具，无法派出子代理", 0
+    print(f"  >>> 子代理{tag}出动：{task[:60]}")
     messages = [
         {"role": "system", "content":
             EXPLORE_SYSTEM_PROMPT + f"\n工作区绝对路径：{tools.WORKSPACE}\n"},
@@ -142,9 +138,55 @@ def explore(task: str) -> str:
         header={"type": "subagent", "content": task},
         schemas=schemas, allowed_tools=EXPLORE_TOOLS,
         max_steps=EXPLORE_MAX_STEPS, _sub=True)
+    print(f"  <<< 子代理{tag}归来（{tokens} tokens）")
+    return answer, tokens
+
+
+def explore(task: str) -> str:
+    """explore 工具的实现（tools.py 惰性导入这里，绕开循环 import）。
+
+    复用 run_messages 主循环，但换成只读系统提示词 + 只读工具白名单 +
+    更小的步数预算；事件记进父代理的同一份轨迹（带 sub 标记）。
+    """
+    global _SUBAGENT_TOKENS
+    answer, tokens = _explore_one(task)
     _SUBAGENT_TOKENS += tokens
-    print(f"  <<< 子代理归来（{tokens} tokens）")
     return f"[子代理结论，本次探索消耗 {tokens} tokens]\n{answer}"
+
+
+EXPLORE_BATCH_MAX = 4  # 并行扇出上限：更多并发省不了墙钟时间，只会让日志交织成灾难
+
+
+def explore_batch(tasks: list) -> str:
+    """并行派出多个只读子代理，各查一个问题，结论汇总返回。
+
+    为什么并行只给只读代理：写操作并行 = 文件冲突地狱，
+    而只读代理之间没有共享可变状态——这和内核里读者不用加锁、
+    写者必须串行是同一个道理（读者-写者问题的对称性）。
+
+    线程安全的三笔账：
+    - 子代理之间零共享：各自的 messages、各自的白名单执行
+    - token 账单在主线程汇总（future 返回值），不用给全局计数器加锁
+    - 轨迹并发写：jsonl 单行 append，CPython 单次 write 有 GIL 兜底，
+      行不会撕裂；行序可能交织，但每条事件自带 step/sub 标记，可后验还原
+    """
+    global _SUBAGENT_TOKENS
+    if not isinstance(tasks, list) or not tasks:
+        return "error: tasks 必须是非空数组"
+    tasks = [str(t) for t in tasks[:EXPLORE_BATCH_MAX]]
+    if len(tasks) == 1:
+        return explore(tasks[0])
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        results = list(pool.map(
+            lambda it: _explore_one(it[1], tag=f"#{it[0] + 1}"),
+            enumerate(tasks)))
+    total = sum(t for _, t in results)
+    _SUBAGENT_TOKENS += total
+    out = [f"[并行探索：{len(tasks)} 个子代理，共消耗 {total} tokens]"]
+    for i, ((answer, t), task) in enumerate(zip(results, tasks)):
+        out.append(f"── 子代理#{i + 1}（{t} tokens）{task[:40]} ──\n{answer}")
+    return "\n\n".join(out)
 
 
 def run_messages(messages: list[dict], log_path: str | None = None,
