@@ -247,6 +247,9 @@ def run_messages(messages: list[dict], log_path: str | None = None,
 
             # —— 终止条件①：模型不再调用工具 = 它认为做完了 ——
             if not message.tool_calls:
+                # 最终回复也要进历史：多轮会话里下一轮需要看到「我上一轮说了什么」
+                # （轨迹里的 llm 事件已在上面记录，重建时自然带上这条）
+                messages.append(_msg_to_dict(message))
                 record({"type": "done", "step": step, "total_tokens": total_tokens,
                         "subagent_tokens": _SUBAGENT_TOKENS})
                 return message.content, total_tokens, log_path
@@ -278,6 +281,10 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                     print(f"[step {step}] {tc.function.name}({tc.function.arguments[:60]}...)")
                     result = tools.execute(tc.function.name, tc.function.arguments,
                                            allowed_tools)
+                    # todo 回显：模型写给自己的外部记忆，钉在上下文最新的位置——
+                    # 追加在尾部，不改写历史，前缀缓存不受影响
+                    if tools.TODO:
+                        result += "\n\n[todo]\n" + tools.render_todo()
                     record({
                         "type": "tool", "step": step, "name": tc.function.name,
                         "arguments": tc.function.arguments, "result": result,
