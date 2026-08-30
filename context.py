@@ -5,10 +5,12 @@
 
 """
 import hashlib
+import os
 
 import tools
 
-MAX_CONTEXT_TOKENS = 60000   # 上下文预算（按所用模型窗口调小、留足余量）
+
+MAX_CONTEXT_TOKENS = int(os.environ.get("ECALL_MAX_CONTEXT", 60000))  # 上下文预算
 KEEP_RECENT_TOOL_RESULTS = 4  # 压缩时保留最近 N 条工具结果原文
 MIN_COMPRESS_CHARS = 300     # 短于这个长度的工具结果不值得压缩
 SWAP_DIR_NAME = ".ecall-swap"  # 换出文件的落点（tools 的观察三件套会跳过它）
