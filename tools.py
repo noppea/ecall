@@ -16,7 +16,7 @@ from pathlib import Path
 WORKSPACE = Path.cwd().resolve()
 
 # 部署校验用：python3 -c "import tools; print(tools.TOOLS_VERSION)"
-TOOLS_VERSION = "v6.5-streaming"
+TOOLS_VERSION = "v6.6-listdir-root-fix"
 
 MAX_FILE_LINES = 200     # read_file 截断
 MAX_OUTPUT_CHARS = 4000  # shell 输出截断
@@ -51,6 +51,11 @@ def read_file(path: str) -> str:
 
 def write_file(path: str, content: str) -> str:
     p = _jail(path)
+    # 嵌套同名目录拦截：模型误以为当前在工作区上一级，往「工作区名/文件」
+    # 里写（真实事故×3）。响亮的错误 + 纠正提示，胜过静默改写路径。
+    if Path(path).parts and Path(path).parts[0] == WORKSPACE.name:
+        return (f"error: 路径以工作区同名目录 {WORKSPACE.name!r} 开头——"
+                f"工作区根就是当前目录，请直接写 {str(Path(*Path(path).parts[1:]))!r}")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return f"ok: 已写入 {path}（{len(content)} 字符）"
@@ -148,7 +153,10 @@ def list_dir(path: str = ".") -> str:
             dirnames[:] = []
             continue
         indent = "  " * depth
-        out.append(f"{indent}{Path(dirpath).name}/")
+        # 根目录必须显示为 ./ 而不是自己的名字：打印名字会让模型误以为
+        # 工作区里还有个同名子目录，然后把文件写进嵌套层（真实事故×3）
+        name = "." if depth == 0 else Path(dirpath).name
+        out.append(f"{indent}{name}/")
         out.extend(f"{indent}  {f}" for f in sorted(filenames)
                    if f not in SKIP_FILES and not f.endswith(SKIP_SUFFIXES))
         if len(out) > MAX_LIST_ENTRIES:
