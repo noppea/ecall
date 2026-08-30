@@ -33,6 +33,8 @@ WARN_REMAINING = 3          # 剩余 3 步时提醒模型收尾
 REPEAT_CALL_LIMIT = 3       # 同一调用重复 N 次判定为振荡
 
 MUTATING_TOOLS = ("write_file", "edit_file")  # 动手前要打 checkpoint 的工具
+OBSERVATION_TOOLS = ("read_file", "list_dir", "grep", "glob", "run_shell")  # 大输出需要 digest 的观察类工具
+DIGEST_ENFORCE_MIN_CHARS = 1500  # 超过这个体积的观察触发强制笔记政策
 
 # —— 子代理：只读探索员 ——
 # 父上下文是宝贵资产（前缀缓存 + token 预算），探索阶段的几十条 grep 输出
@@ -213,6 +215,16 @@ def run_messages(messages: list[dict], log_path: str | None = None,
     warned = False
     call_counts = Counter()  # 振荡检测：统计每个 (工具, 参数) 组合的出现次数
 
+    # —— digest 强制政策（control policy 最高档）——
+    # 实验发现：schema 提供（0 采用）→ 提示词原则（0 采用），模型对可选的
+    # 自我压缩工具一概无视。于是升级为 runtime 强制：大观察落地后挂起标记，
+    # 标记未清除前拒绝执行其他工具——和内核的强制访问控制一个思路：
+    # 不指望进程自觉，把纪律焊死在 ABI 里。
+    # 仅在 digest 工具可用时启用（nodigest 消融组/mini/只读子代理自动豁免，
+    # 否则没有 digest 工具还被强制 = 死锁）。
+    digest_available = any(s["function"]["name"] == "digest" for s in schemas)
+    pending_digest = [False]  # 列表当单元格用：闭包里要能改它
+
     with open(log_path, "a", encoding="utf-8") as log:
         def record(event: dict):
             if _sub:
@@ -306,7 +318,14 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                 sig = (tc.function.name, tc.function.arguments)
                 call_counts[sig] += 1
 
-                if call_counts[sig] >= REPEAT_CALL_LIMIT:
+                if (pending_digest[0] and digest_available
+                        and tc.function.name != "digest"):
+                    # 强制笔记政策执行中：大观察未消化，拒绝继续行动
+                    result = ("error: [runtime] 上一条工具输出超过阈值且尚未 digest。"
+                              "强制笔记政策：先调用 digest 记录要点，再继续其他操作。")
+                    record({"type": "tool", "step": step, "name": sig[0],
+                            "arguments": sig[1], "result": result})
+                elif call_counts[sig] >= REPEAT_CALL_LIMIT:
                     # 振荡检测：同一调用原地打转，不再执行，把警告装进工具结果喂回去
                     # （每个 tool_call 都必须有对应的 tool 响应，否则 API 报错）。
                     result = (f"error: [runtime] 振荡检测：完全相同的调用已重复 "
@@ -339,6 +358,17 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                                     break
                         except Exception:
                             pass  # 笔记关联失败不阻塞主流程
+                    # digest 挂起/解除：观察类工具的大输出挂起标记并现场通知；
+                    # digest 成功调用解除标记。一次 digest 清一次账。
+                    if tc.function.name == "digest" and not result.startswith("error"):
+                        pending_digest[0] = False
+                    elif (digest_available
+                          and tc.function.name in OBSERVATION_TOOLS
+                          and len(result) > DIGEST_ENFORCE_MIN_CHARS):
+                        pending_digest[0] = True
+                        result += (f"\n\n[runtime] 该输出 {len(result)} 字符，超过阈值"
+                                   f"（{DIGEST_ENFORCE_MIN_CHARS}）。强制笔记政策："
+                                   f"请立即调用 digest 记录要点，否则后续工具将被拒绝。")
                     # todo 回显：模型写给自己的外部记忆，钉在上下文最新的位置——
                     # 追加在尾部，不改写历史，前缀缓存不受影响
                     if tools.TODO:
