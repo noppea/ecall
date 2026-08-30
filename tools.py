@@ -16,7 +16,7 @@ from pathlib import Path
 WORKSPACE = Path.cwd().resolve()
 
 # 部署校验用：python3 -c "import tools; print(tools.TOOLS_VERSION)"
-TOOLS_VERSION = "v6.6-listdir-root-fix"
+TOOLS_VERSION = "v6.7-todo-report"
 
 MAX_FILE_LINES = 200     # read_file 截断
 MAX_OUTPUT_CHARS = 4000  # shell 输出截断
@@ -409,6 +409,23 @@ SCHEMAS = [
             "required": ["task"],
         }}},
     {"type": "function", "function": {
+        "name": "todo",
+        "description": ("维护你自己的任务清单（全量替换）。长任务开始时拆解步骤写进来，"
+                        "每完成一项就把状态更新为 done——上下文会被压缩、注意力会漂移，"
+                        "这份清单是你写给自己的外部记忆，每步都会回显给你"),
+        "parameters": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"items": {
+                "type": "array",
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "content": {"type": "string"},
+                        "status": {"type": "string",
+                                   "enum": ["pending", "doing", "done"]}},
+                    "required": ["content", "status"]}}},
+            "required": ["items"]}}},
+    {"type": "function", "function": {
         "name": "run_shell",
         "description": ("在工作区内执行 shell 命令（有超时、截断与风险分级；"
                         "沙箱模式下文件系统只读且断网）"),
@@ -434,7 +451,35 @@ HANDLERS = {
     "glob": lambda a: glob_files(a["pattern"]),
     "run_shell": lambda a: run_shell(a["command"], a.get("timeout", 60)),
     "explore": lambda a: explore(a["task"]),
+    "todo": lambda a: todo(a["items"]),
 }
+
+
+# ---------- todo：模型写给自己的外部记忆 ----------
+# 长任务的敌人是上下文漂移：几十步之后，最初的计划在上下文里越埋越深，
+# 模型开始「忘记接下来要干嘛」。todo 让它把计划外化——每步回显，永远在最近的位置。
+# 对照 AGENTS.md：那是人写给模型的指令，这是模型写给自己的。
+
+TODO: list[dict] = []  # 会话级状态；每步由主循环回显进工具结果尾部
+
+TODO_MAX_ITEMS = 20  # 清单不是垃圾桶：超过这个长度说明任务拆解粒度出了问题
+
+
+def render_todo() -> str:
+    mark = {"pending": "[ ]", "doing": "[~]", "done": "[x]"}
+    return "\n".join(f"{mark.get(i.get('status'), '[ ]')} {i.get('content', '')}"
+                     for i in TODO)
+
+
+def todo(items: list) -> str:
+    global TODO
+    if not isinstance(items, list):
+        return "error: items 必须是数组"
+    TODO = [{"content": str(i.get("content", ""))[:200],
+             "status": i.get("status") if i.get("status") in
+             ("pending", "doing", "done") else "pending"}
+            for i in items[:TODO_MAX_ITEMS] if isinstance(i, dict)]
+    return "ok: todo 已更新\n" + render_todo()
 
 
 def execute(name: str, arguments_json: str, allowed: tuple | None = None) -> str:
