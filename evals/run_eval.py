@@ -33,6 +33,9 @@ def run_one(task: dict, config: str, rep: int) -> dict:
     临时目录同时也是对 _jail 的实战检验：agent 只能在里面折腾。
     """
     log_file = LOG_DIR / f"{task['id']}-{config}-r{rep}.jsonl"
+    # 轨迹是 append 模式：重跑同 rep 前必须删掉旧日志，
+    # 否则新一轮的事件叠在旧尸体后面，步数/token 解析全是脏数据
+    log_file.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix=f"ecall-eval-{task['id']}-") as ws:
         # 摆 fixture：把任务自带的初始文件写进临时工作区
         for name, content in (task.get("files") or {}).items():
@@ -45,7 +48,7 @@ def run_one(task: dict, config: str, rep: int) -> dict:
             env["ECALL_MINI"] = "1"
 
         t0 = time.time()
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, str(ECALL_DIR / "main.py"), task["prompt"]],
             cwd=ws, env=env, capture_output=True, text=True, timeout=900,
             stdin=subprocess.DEVNULL,  # 非交互：审批门走自动放行路径，绝不阻塞评测
@@ -69,6 +72,12 @@ def run_one(task: dict, config: str, rep: int) -> dict:
                     # 账单 = 父代理花费 + 子代理花费（不许隐身）
                     tokens = ((e.get("total_tokens") or 0)
                               + (e.get("subagent_tokens") or 0)) or tokens
+
+        # 秒退（0 步）说明进程根本没跑起来：把 stderr 尾巴吐出来，别让 FAIL 静默
+        if steps == 0:
+            tail = "\n".join((proc.stderr or "").splitlines()[-5:]) \
+                   or "\n".join((proc.stdout or "").splitlines()[-5:])
+            print(f"  [诊断] agent 秒退，输出末尾：\n  {tail}")
 
         return {"ts": int(t0), "task": task["id"], "config": config, "rep": rep,
                 "passed": int(passed), "steps": steps, "tokens": tokens,
