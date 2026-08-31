@@ -23,7 +23,8 @@ SYSTEM_PROMPT = (
     "4. 遇到失败：读错误输出，定位根因，不要盲目重试。\n"
     "5. 需求不清时（路径不明、目标含糊），停下来用最终回复向我澄清，不要猜测乱试。\n"
     "6. 读到大量内容（长文件、长日志、大量 grep 结果）后，立即用 digest 记下要点"
-    "（结论、关键行号）；上下文压缩时，你的笔记会取代原文成为你的记忆。\n"
+    "（结论、关键行号）；digest 可以和下一步操作在同一次回复里一起发出；"
+    "上下文压缩时，你的笔记会取代原文成为你的记忆。\n"
 )
 
 # 预算三件套全部环境变量化：默认值是分钟级任务的标定，
@@ -232,8 +233,10 @@ def run_messages(messages: list[dict], log_path: str | None = None,
     # —— digest 强制政策（control policy 最高档）——
     # 实验发现：schema 提供（0 采用）→ 提示词原则（0 采用），模型对可选的
     # 自我压缩工具一概无视。于是升级为 runtime 强制：大观察落地后挂起标记，
-    # 标记未清除前拒绝执行其他工具——和内核的强制访问控制一个思路：
+    # 标记未清除前，不含 digest 的批次整批拒绝——和内核的强制访问控制一个思路：
     # 不指望进程自觉，把纪律焊死在 ABI 里。
+    # 但纪律不等于多缴话费：digest 与后续操作同批发出时整批放行
+    # （digest 提前执行，见下方「并行清账」），强制笔记的边际成本 ≈ 零新增往返。
     # 仅在 digest 工具可用时启用（nodigest 消融组/mini/只读子代理自动豁免，
     # 否则没有 digest 工具还被强制 = 死锁）。
     digest_available = any(s["function"]["name"] == "digest" for s in schemas)
@@ -337,17 +340,34 @@ def run_messages(messages: list[dict], log_path: str | None = None,
             # —— 历史只 append、不改写（前缀缓存铁律；压缩是唯一例外，见 context.py）——
             messages.append(_msg_to_dict(message))
 
+            # 并行清账（digest 税的第二刀，第一刀是自适应门）：
+            # 旧版 enforcement 是「挂起期间拒绝一切非 digest 工具」——模型被迫
+            # 先单独跑一轮纯 digest，再跑一轮干活，每次强制笔记白缴一次
+            # 全上下文往返（水位线实验：16k 下 6.2万→23万，近 4 倍）。
+            # 但协议本来允许一轮发多个 tool_calls：只要本批含 digest，
+            # 把 digest 提前执行（顺序无关化；笔记也才能贴到上一条大观察上）、
+            # 其余照常放行——笔记与行动同批落地，往返次数为零新增。
+            # 被拒绝的只剩「整批都不含 digest」这一种情况。
+            batch = list(message.tool_calls)
+            if pending_digest[0] and digest_available:
+                digests = [tc for tc in batch if tc.function.name == "digest"]
+                if digests:
+                    batch = digests + [tc for tc in batch
+                                       if tc.function.name != "digest"]
+
             # —— 行动 + 观察：本地执行工具，结果喂回模型 ——
-            for tc in message.tool_calls:
+            for tc in batch:
                 sig = (tc.function.name, tc.function.arguments)
                 call_counts[sig] += 1
 
                 if (pending_digest[0] and digest_available
                         and tc.function.name != "digest"):
-                    # 强制笔记政策执行中：大观察未消化，拒绝继续行动
+                    # 强制笔记政策执行中：整批都没有 digest，拒绝行动
                     result = ("error: [runtime] 上一条工具输出超过阈值且尚未 digest。"
-                              "强制笔记政策：先调用 digest 记录要点，再继续其他操作。")
+                              "强制笔记政策：请在下次回复中把 digest 与后续操作"
+                              "放在同一批 tool_calls 里发出（digest 会先执行）。")
                     record({"type": "tool", "step": step, "name": sig[0],
+                            "call_id": tc.id,
                             "arguments": sig[1], "result": result})
                 elif call_counts[sig] >= REPEAT_CALL_LIMIT:
                     # 振荡检测：同一调用原地打转，不再执行，把警告装进工具结果喂回去
@@ -393,13 +413,16 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                         pending_digest[0] = True
                         result += (f"\n\n[runtime] 该输出 {len(result)} 字符，超过阈值"
                                    f"（{DIGEST_ENFORCE_MIN_CHARS}）。强制笔记政策："
-                                   f"请立即调用 digest 记录要点，否则后续工具将被拒绝。")
+                                   f"请在下次回复中把 digest 与后续操作放在同一批"
+                                   f" tool_calls 里发出（digest 会先执行），"
+                                   f"整批不含 digest 的调用将被拒绝。")
                     # todo 回显：模型写给自己的外部记忆，钉在上下文最新的位置——
                     # 追加在尾部，不改写历史，前缀缓存不受影响
                     if tools.TODO:
                         result += "\n\n[todo]\n" + tools.render_todo()
                     record({
                         "type": "tool", "step": step, "name": tc.function.name,
+                        "call_id": tc.id,  # 并行清账会重排执行顺序，重建靠它配对
                         "arguments": tc.function.arguments, "result": result,
                     })
 

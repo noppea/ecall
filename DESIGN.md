@@ -195,6 +195,7 @@ Qwen 在 full 下满分、mini 下反而失败一次，而 DeepSeek 两组均满
 | kernel-deps 10/10 团灭 | 检查器没考虑"零依赖+全员并列"退化情形，max() 任意选路径；模型答 N/A 反被判错 | 三轮迭代：接受 N/A → 接受空值 → prompt 显式约定退化协议 | 检查器也是软件，先怀疑判定器再怀疑模型 |
 | resume 后 digest 笔记蒸发 | `_digest` 只挂内存消息，不落轨迹；重建后压缩退回首行规则 | rebuild 时从 digest 调用事件里取 summary 挂回前一条大输出 | 重建世界需要的一切都必须能从轨迹恢复 |
 | 宽松水位下 full 组贵 4 倍 | 全程强制 digest = 每个大观察一次额外全上下文调用，无压缩时纯浪费 | 自适应 enforcement：首次压缩事件发生后才上岗（ECALL_DIGEST_FORCE=1 恢复旧行为） | 笔记的需求始于换出；保险不该在没风险时收保费 |
+| 强制笔记白缴一次全上下文往返 | enforcement「拒绝+等下一轮」迫使模型单独跑一轮纯 digest | 并行清账：本批含 digest 则提前执行、其余放行；tool 事件记 call_id，重建按 id 配对 | 协议允许多 tool_calls 同批——纪律要焊死，但不必多缴一轮话费 |
 | FAIL 原因靠 grep 考古 | run_eval 只印 PASS/FAIL 不印检查器断言 | FAIL 时自动打印断言最后一行 | 诊断信息要在故障现场就地产生 |
 
 ## 9. 已知局限
