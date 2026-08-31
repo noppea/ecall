@@ -585,6 +585,27 @@ class TestDigestEnforcement(WorkspaceCase):
         self.assertFalse((self.ws / "o.txt").exists())
         self.assertIn("ok", results[3]["result"])  # digest 清账
 
+    def test_mid_batch_arming_does_not_reject_siblings(self):
+        """批内埋雷不炸同批（实弹抓到的 bug）：模型并行发 [read A, read B]
+        时账是清的，A 落地大输出才挂起——同批的 B 不该被拒，
+        否则每次误拒 = 模型白烧一轮全上下文往返重发。旧账下批再追。"""
+        big = "x" * 2000
+        (self.ws / "a.txt").write_text(big)
+        (self.ws / "b.txt").write_text(big)
+        script = [
+            _FakeMsg(tool_calls=[
+                _FakeTC("read_file", '{"path": "a.txt"}', _id="c1"),
+                _FakeTC("read_file", '{"path": "b.txt"}', _id="c2"),
+            ]),
+            _FakeMsg(tool_calls=[_FakeTC("digest", '{"summary": "两坨 x"}')]),
+            _FakeMsg(content="done"),
+        ]
+        events = self._run_script(script)
+        results = [e for e in events if e["type"] == "tool"]
+        self.assertIn("强制笔记政策", results[0]["result"])   # a.txt 挂起+通知
+        self.assertNotIn("尚未 digest", results[1]["result"])  # b.txt 不被追溯
+        self.assertIn("ok", results[2]["result"])              # 下一批 digest 清账
+
     def test_enforcement_is_adaptive(self):
         """自适应强制（水位线扫描实验的产物）：没发生压缩时不缴保费
         （大观察不挂起）；首次压缩事件之后 enforcement 才上岗。"""
