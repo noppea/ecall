@@ -355,14 +355,24 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                     batch = digests + [tc for tc in batch
                                        if tc.function.name != "digest"]
 
+            # 欠账判定冻结在批次边界（实弹轨迹抓到的 bug）：
+            # 模型并行发 [read A, read B] 时账是清的，执行到 A 落地大输出才
+            # 挂起——若用实时标记判断，同批的 B 会被一颗刚埋的雷炸掉，
+            # 模型白白多跑一轮重发（16k 强制模式下每发 5~10 次误拒，
+            # 正好解释并行化后的残余税）。只有「发出本批之前就欠的账」
+            # 才够格拒绝；批内新欠的账，下一批再追。
+            debt_due = (pending_digest[0] and digest_available
+                        and not any(tc.function.name == "digest"
+                                    for tc in message.tool_calls))
+
             # —— 行动 + 观察：本地执行工具，结果喂回模型 ——
             for tc in batch:
                 sig = (tc.function.name, tc.function.arguments)
                 call_counts[sig] += 1
 
-                if (pending_digest[0] and digest_available
-                        and tc.function.name != "digest"):
+                if debt_due and tc.function.name != "digest":
                     # 强制笔记政策执行中：整批都没有 digest，拒绝行动
+                    # （仅限批次发出前已欠账——批内新欠的账不追溯同批）
                     result = ("error: [runtime] 上一条工具输出超过阈值且尚未 digest。"
                               "强制笔记政策：请在下次回复中把 digest 与后续操作"
                               "放在同一批 tool_calls 里发出（digest 会先执行）。")
