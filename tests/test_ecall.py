@@ -6,6 +6,7 @@
 模型不可离线测，但 harness 的每一条规则都可以、也必须可以。
 """
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -60,7 +61,7 @@ class TestFileIO(WorkspaceCase):
         self.assertIn("你好 ecall", tools.read_file("hello.txt"))
 
     def test_write_nested_workspace_name_guard(self):
-        """模型最常犯的错——把写进 ./xxx/ 写成 xxx/xxx/。
+        """v6.6：模型最常犯的错——把写进 ./xxx/ 写成 xxx/xxx/。
         write_file 必须拦下并给出纠正提示，而不是真的造出嵌套目录。"""
         msg = tools.write_file(f"{self.ws.name}/a.txt", "x")
         self.assertIn("error", msg)
@@ -68,7 +69,7 @@ class TestFileIO(WorkspaceCase):
         self.assertFalse((self.ws / self.ws.name).exists())
 
     def test_list_dir_root_is_dot(self):
-        """根目录必须显示 ./ 而不是工作区同名——
+        """v6.6：根目录必须显示 ./ 而不是工作区同名——
         这个 bug 是评测钓出来的（full 组 22/24 → 24/24），回归测试锁死它。"""
         tools.write_file("a.txt", "x")
         out = tools.list_dir(".")
@@ -264,6 +265,26 @@ class TestRebuild(WorkspaceCase):
         log.write_text("\n".join(json.dumps(e) for e in events))
         return str(log)
 
+    def test_rebuild_reattaches_digest(self):
+        """digest 笔记不落轨迹本体，但重建时必须从调用事件里挂回前一条大输出，
+        否则 resume/fork 之后压缩退回首行规则，笔记在崩溃点蒸发。"""
+        log = self._write_log([
+            {"type": "task", "content": "T"},
+            {"type": "llm", "step": 1, "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"type": "tool", "step": 1, "result": "X" * 5000},
+            {"type": "llm", "step": 2, "content": "", "tool_calls": [
+                {"id": "c2", "type": "function",
+                 "function": {"name": "digest",
+                              "arguments": json.dumps({"summary": "页表初始化代码"})}}]},
+            {"type": "tool", "step": 2, "result": "已记录"},
+        ])
+        msgs = timetravel.rebuild_messages(log, to_step=2)
+        tools_msgs = [m for m in msgs if m["role"] == "tool"]
+        self.assertEqual(tools_msgs[0].get("_digest"), "页表初始化代码")
+        self.assertNotIn("_digest", tools_msgs[1])  # digest 自己的回执不被误标
+
     def test_tool_call_pairing(self):
         """tool 事件没存 tool_call_id，必须按顺序配对——配错一个全链路错位。"""
         log = self._write_log([
@@ -292,6 +313,32 @@ class TestRebuild(WorkspaceCase):
         ])
         timetravel.rebuild_messages(log, to_step=1)
         self.assertEqual(len(calls), 1)  # 原列表完好
+
+    def test_rebuild_pairs_by_call_id_when_reordered(self):
+        """并行清账把 digest 提前执行：tool 事件顺序 ≠ tool_calls 发出顺序。
+        重建必须按 call_id 精确配对，否则 digest 的回执错配给 write 的 id。"""
+        log = self._write_log([
+            {"type": "task", "content": "T"},
+            {"type": "llm", "step": 1, "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"type": "tool", "step": 1, "call_id": "c1", "result": "X" * 5000},
+            # 模型同批发出 [write, digest]，runtime 把 digest 提前执行：
+            {"type": "llm", "step": 2, "content": "", "tool_calls": [
+                {"id": "c2", "type": "function",
+                 "function": {"name": "write_file", "arguments": "{}"}},
+                {"id": "c3", "type": "function",
+                 "function": {"name": "digest",
+                              "arguments": json.dumps({"summary": "笔记"})}}]},
+            {"type": "tool", "step": 2, "call_id": "c3", "result": "ok 已记录"},
+            {"type": "tool", "step": 2, "call_id": "c2", "result": "ok 已写入"},
+        ])
+        msgs = timetravel.rebuild_messages(log, to_step=2)
+        tools_msgs = [m for m in msgs if m["role"] == "tool"]
+        by_id = {m["tool_call_id"]: m for m in tools_msgs}
+        self.assertEqual(by_id["c3"]["content"], "ok 已记录")   # 不错配
+        self.assertEqual(by_id["c2"]["content"], "ok 已写入")
+        self.assertEqual(by_id["c1"].get("_digest"), "笔记")      # 笔记贴对观察
 
     def test_sub_events_excluded(self):
         """子代理事件不属于父历史：父上下文里只有 explore 的结论。"""
@@ -427,6 +474,7 @@ class TestDigestEnforcement(WorkspaceCase):
         import llm as llm_mod
         old = llm_mod.chat
         agent.llm.chat = fake_chat
+        os.environ["ECALL_DIGEST_FORCE"] = "1"  # 这两个用例测 enforcement 机制本身，跳过自适应门
         try:
             log = str(self.ws / "t.jsonl")
             agent.run_messages(
@@ -436,6 +484,7 @@ class TestDigestEnforcement(WorkspaceCase):
             return [json.loads(l) for l in open(log)]
         finally:
             agent.llm.chat = old
+            os.environ.pop("ECALL_DIGEST_FORCE", None)
 
     def test_big_observation_blocks_until_digest(self):
         """剧本：读大文件 → 试图直接写文件（应被强制政策拒绝）→ digest → 完工。"""
@@ -487,6 +536,101 @@ class TestDigestEnforcement(WorkspaceCase):
         finally:
             agent.llm.chat = old
         self.assertTrue((self.ws / "o.txt").exists())  # write 未被拦截
+
+    def test_digest_can_batch_with_next_action(self):
+        """并行清账（digest 税的第二刀）：digest 与后续操作打在同一批发出时
+        整批放行——enforcement 不再白缴一次全上下文往返。
+        且批次内顺序无关：digest 被提前执行，write 不再被拒。"""
+        big = "x" * 2000
+        (self.ws / "big.txt").write_text(big)
+        script = [
+            _FakeMsg(tool_calls=[_FakeTC("read_file", '{"path": "big.txt"}')]),
+            # 同一批、且顺序「错误」（先干活后笔记）——runtime 应重排：
+            _FakeMsg(tool_calls=[
+                _FakeTC("write_file", '{"path": "o.txt", "content": "y"}', _id="c2"),
+                _FakeTC("digest", '{"summary": "全是 x"}', _id="c3"),
+            ]),
+            _FakeMsg(content="done"),
+        ]
+        events = self._run_script(script)
+        results = [e for e in events if e["type"] == "tool"]
+        # 第一发：大观察挂起 + 通知（提示语改为同批发出）
+        self.assertIn("强制笔记政策", results[0]["result"])
+        self.assertIn("同一批", results[0]["result"])
+        # 第二发：digest 被提前执行，成功清账
+        self.assertEqual(results[1]["name"], "digest")
+        self.assertIn("ok", results[1]["result"])
+        # 第三发：write_file 照常执行，不再被拒
+        self.assertEqual(results[2]["name"], "write_file")
+        self.assertNotIn("尚未 digest", results[2]["result"])
+        self.assertTrue((self.ws / "o.txt").exists())
+
+    def test_batch_without_digest_still_rejected(self):
+        """整批不含 digest 时维持原判：全部拒绝——并行化不是开闸放水。"""
+        big = "x" * 2000
+        (self.ws / "big.txt").write_text(big)
+        script = [
+            _FakeMsg(tool_calls=[_FakeTC("read_file", '{"path": "big.txt"}')]),
+            _FakeMsg(tool_calls=[
+                _FakeTC("write_file", '{"path": "o.txt", "content": "y"}', _id="c2"),
+                _FakeTC("read_file", '{"path": "big.txt"}', _id="c3"),
+            ]),
+            _FakeMsg(tool_calls=[_FakeTC("digest", '{"summary": "全是 x"}')]),
+            _FakeMsg(content="done"),
+        ]
+        events = self._run_script(script)
+        results = [e for e in events if e["type"] == "tool"]
+        self.assertIn("尚未 digest", results[1]["result"])  # write 被拒
+        self.assertIn("尚未 digest", results[2]["result"])  # read 也被拒
+        self.assertFalse((self.ws / "o.txt").exists())
+        self.assertIn("ok", results[3]["result"])  # digest 清账
+
+    def test_enforcement_is_adaptive(self):
+        """自适应强制（水位线扫描实验的产物）：没发生压缩时不缴保费
+        （大观察不挂起）；首次压缩事件之后 enforcement 才上岗。"""
+        import types
+        big = "x" * 2000
+        (self.ws / "big.txt").write_text(big)
+        (self.ws / "big2.txt").write_text(big)
+        os.environ.pop("ECALL_DIGEST_FORCE", None)  # 确保走自适应路径
+        script = [
+            _FakeMsg(tool_calls=[_FakeTC("read_file", '{"path": "big.txt"}')]),
+            _FakeMsg(tool_calls=[_FakeTC("read_file", '{"path": "big2.txt"}')]),
+            _FakeMsg(tool_calls=[_FakeTC("write_file", '{"path": "o.txt", "content": "y"}')]),
+            _FakeMsg(tool_calls=[_FakeTC("digest", '{"summary": "两坨 x"}')]),
+            _FakeMsg(content="done"),
+        ]
+        calls = {"i": 0}
+        def fake_chat(messages, tools_, max_retries=3, on_token=None):
+            msg = script[min(calls["i"], len(script) - 1)]
+            calls["i"] += 1
+            return msg, types.SimpleNamespace(total_tokens=100, model_dump=lambda: {})
+        mc_calls = {"i": 0}
+        def fake_mc(messages):
+            mc_calls["i"] += 1
+            # 从第 2 步起声称发生了压缩（换出开始，笔记有了保值义务）
+            return messages, ([{"e": 1}] if mc_calls["i"] >= 2 else [])
+        old_chat, old_mc = agent.llm.chat, agent.context.maybe_compress
+        agent.llm.chat = fake_chat
+        agent.context.maybe_compress = fake_mc
+        try:
+            log = str(self.ws / "t3.jsonl")
+            agent.run_messages(
+                [{"role": "system", "content": "s"},
+                 {"role": "user", "content": "t"}],
+                log_path=log, header={"type": "task", "content": "t"})
+            events = [json.loads(l) for l in open(log)]
+        finally:
+            agent.llm.chat = old_chat
+            agent.context.maybe_compress = old_mc
+        results = [e for e in events if e["type"] == "tool"]
+        # 第 1 次读：压缩未发生 → 不挂起、无强制通知
+        self.assertNotIn("强制笔记政策", results[0]["result"])
+        # 第 2 次读：压缩已发生 → 挂起 + 通知
+        self.assertIn("强制笔记政策", results[1]["result"])
+        # write 被拒，直到 digest 清账
+        self.assertIn("尚未 digest", results[2]["result"])
+        self.assertFalse((self.ws / "o.txt").exists())
 
 
 # ---------- 预算全局熔断（§fork 炸弹修复） ----------
