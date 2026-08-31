@@ -107,6 +107,24 @@ python3 main.py fork .ecall-log.jsonl -s 12    # 从第 12 步分叉，换个方
 | full | 12/12，12016 tok / 6 步 |
 | mini | 12/12，8696 tok / 6 步 |
 
+digest 消融（进阶集，8k 压缩水位线，**n=40/组**）：
+
+| 配置 | pass | token 中位数 |
+|---|---|---|
+| full（强制 digest） | 40/40 | 15810 |
+| nodigest | 40/40 | 16008 |
+
+内核级大任务（真实 Rust 内核仓库，数千行；预算放宽至 150 步 / 3M token）：
+
+| 配置 | census（统计） | doc（架构写作） |
+|---|---|---|
+| full | 3/3，中位 53k tok | 2/3 |
+| nodigest | 3/3，中位 80k tok | 1/3 |
+
+digest 三级采用率实验（control policy 消融）：L1 仅提供 schema → 自发采用 0 次；
+L2 加入系统提示词原则 → 0 次；L3 runtime 强制（大观察未消化则拒绝后续工具）→ 采用率 0→8。
+唯一观察到的自发采用在持续高压的手动长会话（3 次）。
+
 三个值得注意的发现：
 
 1. **在两个规模级别上，mini（仅 bash）pass 率均与 full 持平，且稳定省约 30~45% token**——
@@ -118,7 +136,13 @@ python3 main.py fork .ecall-log.jsonl -s 12    # 从第 12 步分叉，换个方
    同一模型在不同 harness 下表现不同，脱离 harness 谈模型强弱没有意义。
 3. **评测能钓出真实 harness bug**：full 组初测为 22/24，回放失败轨迹定位到 list_dir 把根目录
    打印成工作区同名、诱导模型嵌套写入的 bug；修复后复测回到 24/24，token 中位数从 7870 降到 6988。
-   没有评测，这个 bug 会一直在那里。
+   同类事件还有：预算护栏对子代理事后结算导致的 fork 炸弹（explore_batch 一次扇出
+   8 步烧穿 2M token，修复为全局实时熔断）、fixture 空转时模型拒绝编造数据（"证据优先"
+   原则实弹生效）、以及 agent 自主发现"read_file 有 jail 而 run_shell 没有"的红队行为——
+   这正是 bwrap 沙盒必须默认开启的论据。
+4. **自我压缩的采用率是 control policy 的函数**：digest 工具三级治理实验见上表；
+   在 n=40×2 的消融上强制 digest 成本与收益相抵（中位数差 1.2%）——机制价值域在长程任务，
+   采用可以被强制，价值仍需规模兑现。
 
 生成可视化报告：`python3 evals/report.py`（results.csv → 单文件 HTML，零依赖）。
 
