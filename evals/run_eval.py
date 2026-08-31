@@ -32,7 +32,7 @@ def run_one(task: dict, config: str, model: str, rep: int) -> dict:
 
     临时目录同时也是对 _jail 的实战检验：agent 只能在里面折腾。
     """
-    log_file = LOG_DIR / f"{task['id']}-{config}-r{rep}.jsonl"
+    log_file = LOG_DIR / f"{task['id']}-{config}-{model}-r{rep}.jsonl"
     # 轨迹是 append 模式：重跑同 rep 前必须删掉旧日志，
     # 否则新一轮的事件叠在旧尸体后面，步数/token 解析全是脏数据
     log_file.unlink(missing_ok=True)
