@@ -1,0 +1,8 @@
+[
+  {
+    "id": "kernel-quiz",
+    "prompt": "工作区里的 quiz/ 是一个小型 Rust 内核代码库。任务分两个阶段，必须严格按顺序执行：\n第一阶段：用 read_file 逐文件通读 quiz/src/ 下的全部 .rs 文件（含子目录），理解每个函数的职责与跨文件调用关系。此阶段禁止写任何文件，禁止使用 explore/explore_batch，禁止打开 QUIZ.md。\n第二阶段：确认 11 个 .rs 文件全部读完后，打开 quiz/QUIZ.md，把 5 个问题的答案写到工作区根目录的 ANSWER.md，每行一条，格式为 `Q编号=答案`，只写这 5 行。答案必须是代码中真实存在的标识符或数值，不许编造。",
+    "copy_dir": "fixtures/quiz",
+    "check": "test -f ANSWER.md && python3 -c \"\nlines = {}\nfor l in open('ANSWER.md', encoding='utf-8').read().splitlines():\n    if '=' in l:\n        k, v = l.split('=', 1)\n        lines[k.strip().rstrip(':：')] = v.strip().strip('\\`').strip()\nexp = {'Q1': 'on_timer_interrupt', 'Q3': 'switch_to', 'Q4': 'TaskContext'}\nfor k, v in exp.items():\n    got = lines.get(k)\n    assert got == v, f'{k}: {got!r} != {v!r}'\nq2 = lines.get('Q2')\nassert q2 in ('tick', 'sched::tick', 'crate::sched::tick'), f'Q2: {q2!r}'\nq5 = lines.get('Q5', '').replace(' ', '')\nassert q5 in ('RUN_QUEUE_CAPACITY=64', '64'), f'Q5: {q5!r}'\nn = len([l for l in open('ANSWER.md', encoding='utf-8').read().splitlines() if l.strip()])\nassert n == 5, f'ANSWER.md 必须恰好 5 行, 实为 {n} 行'\n\""
+  }
+]
