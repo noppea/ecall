@@ -121,6 +121,19 @@ def rebuild_messages(log_path: str, to_step: int) -> list[dict]:
             tc = pending_calls.pop(0)
             messages.append({"role": "tool", "tool_call_id": tc["id"],
                              "content": e["result"]})
+            if tc["function"]["name"] == "digest":
+                # digest 笔记不落轨迹本体，但调用事件里有 summary：
+                # 重建时把它挂回前一条大输出，否则 resume/fork 后压缩退回首行规则，
+                # 笔记在崩溃点全部蒸发（轨迹一等公民原则的漏洞）
+                try:
+                    note = json.loads(tc["function"]["arguments"]).get("summary", "")
+                except (json.JSONDecodeError, TypeError):
+                    note = ""
+                for m in reversed(messages[:-1]):
+                    if m.get("role") == "tool":
+                        if note:
+                            m["_digest"] = note
+                        break
         elif e["type"] == "steer" and (e.get("step") or 0) <= to_step:
             # 转向指令当时被注入过历史，重建时也要回到原来的位置
             messages.append({"role": "user",
