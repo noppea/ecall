@@ -1,0 +1,8 @@
+[
+  {
+    "id": "kernel-unsafe-audit",
+    "prompt": "这个工作区里的 kernel/ 是一个真实的 Rust 操作系统内核仓库。审计它所有的 unsafe 块，把结果写到工作区根目录的 UNSAFE.md，每个 unsafe 块一行，格式严格为：\nkernel/路径.rs:行号: 一句话用途说明\n判定标准：unsafe 后紧跟 { 的代码位置（同一行出现多次只记一次），范围是 kernel/ 下所有 .rs 文件。用途说明至少 4 个字符，要写出这个块实际在做什么；不许整段复制同一句套话，不许遗漏，不许编造。只写这些行，不要标题和多余文字。",
+    "copy_dir": "fixtures/kernel",
+    "check": "test -f UNSAFE.md && python3 -c \"\nimport re, glob\nref = set()\nfor f in glob.glob('kernel/**/*.rs', recursive=True):\n    for i, line in enumerate(open(f, encoding='utf-8', errors='ignore'), 1):\n        if re.search(r'\\bunsafe\\s*\\{', line):\n            ref.add((f, i))\nrows = [l.strip() for l in open('UNSAFE.md', encoding='utf-8') if l.strip()]\ngot, descs = [], []\nfor l in rows:\n    m = re.match(r'^(kernel/\\S+?\\.rs):(\\d+)[:：]\\s*(.*)$', l)\n    assert m, f'行格式错误: {l[:50]}'\n    got.append((m.group(1), int(m.group(2)))); descs.append(m.group(3).strip())\nmiss = ref - set(got); extra = set(got) - ref\nassert not miss and not extra, f'漏 {len(miss)} 处, 多 {len(extra)} 处, 例: {list(miss)[:2]}{list(extra)[:2]}'\nassert all(len(d) >= 4 for d in descs), '存在过短的用途说明'\nuniq = len(set(descs))\nassert uniq >= max(2, int(len(descs) * 0.4)), f'说明大面积重复（{uniq}/{len(descs)} 条不同），疑似没逐个阅读'\n\""
+  }
+]

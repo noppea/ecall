@@ -66,6 +66,12 @@ def run_one(task: dict, config: str, model: str, rep: int) -> dict:
         check = subprocess.run(task["check"], shell=True, cwd=ws,
                                capture_output=True, text=True, timeout=120)
         passed = check.returncode == 0
+        if not passed:
+            # FAIL 不许静默：把检查器的断言尾巴印出来，省得事后 grep 考古
+            err_lines = (check.stderr or "").strip().splitlines() \
+                        or (check.stdout or "").strip().splitlines()
+            tail = err_lines[-1] if err_lines else "(check 无任何输出)"
+            print(f"  [check] {tail[:200]}")
 
         # 从轨迹里挖 steps / tokens（轨迹是唯一事实来源）
         steps, tokens = 0, 0
