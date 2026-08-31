@@ -56,6 +56,13 @@ EXPLORE_TOOLS = ("read_file", "list_dir", "grep", "glob")  # 只读白名单
 EXPLORE_MAX_STEPS = int(os.environ.get("ECALL_EXPLORE_MAX_STEPS", 15))
 
 _SUBAGENT_TOKENS = 0        # 子代理累计花费（计入父代理的预算检查，不许隐身）
+
+# 全局实时熔断计数器：父代理与子代理的每一次 API 调用后立即累加。
+# 教训（真实事故）：旧设计是「子代理回家后一次性把账单计入父预算」——
+# 事后结算。explore_batch 扇出 4 个 × 子代理各 40 步，父代理 8 步烧穿
+# 2M token（568 条子代理事件），护栏全程没有机会介入。
+# 进程树的资源边界必须是全局且实时的，不能等进程退出再算总账。
+_TOTAL_SPENT = [0]  # 列表单元格：子代理线程也能就地累加
 _CURRENT_LOG: str | None = None  # 当前活跃轨迹，供 explore 把子代理事件记进同一份日志
 
 
@@ -215,6 +222,8 @@ def run_messages(messages: list[dict], log_path: str | None = None,
         schemas = tools.SCHEMAS
     if max_steps is None:
         max_steps = MAX_STEPS
+    if not _sub:
+        _TOTAL_SPENT[0] = 0  # 每次顶层任务重置；子代理不重置（共享父任务的预算池）
     total_tokens = 0
     consecutive_errors = 0
     warned = False
@@ -292,6 +301,7 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                 print()  # 流式输出收尾换行，再接后面的 [step N] 行
 
             total_tokens += usage.total_tokens if usage else 0
+            _TOTAL_SPENT[0] += usage.total_tokens if usage else 0  # 实时入账
             record({
                 "type": "llm", "step": step, "content": message.content,
                 "tool_calls": [tc.model_dump() for tc in (message.tool_calls or [])],
@@ -299,8 +309,10 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                 "est_context": context.estimate_tokens(messages),
             })
 
-            # —— 终止条件④：token 总预算耗尽（子代理的花费也记在这本账上）——
-            if total_tokens + _SUBAGENT_TOKENS > MAX_TOTAL_TOKENS:
+            # —— 终止条件④：token 总预算耗尽——全局实时熔断 ——
+            # 父代理、子代理的每个循环、每一步都查这同一个计数器：
+            # 子代理跑到一半就能把整棵树拉闸，而不是回家才交账单
+            if _TOTAL_SPENT[0] > MAX_TOTAL_TOKENS:
                 record({"type": "abort", "reason": "token_budget",
                         "total_tokens": total_tokens,
                         "subagent_tokens": _SUBAGENT_TOKENS})
