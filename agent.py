@@ -238,6 +238,11 @@ def run_messages(messages: list[dict], log_path: str | None = None,
     # 否则没有 digest 工具还被强制 = 死锁）。
     digest_available = any(s["function"]["name"] == "digest" for s in schemas)
     pending_digest = [False]  # 列表当单元格用：闭包里要能改它
+    # 自适应强制（水位线扫描实验的产物）：笔记的需求始于换出。
+    # 没发生过压缩时原文就在上下文里，强制笔记只是白缴 4 倍保费；
+    # 首次压缩之后才启动 enforcement。ECALL_DIGEST_FORCE=1 恢复全程强制。
+    compression_seen = [False]
+    digest_force_always = os.environ.get("ECALL_DIGEST_FORCE") == "1"
 
     with open(log_path, "a", encoding="utf-8") as log:
         def record(event: dict):
@@ -253,6 +258,7 @@ def run_messages(messages: list[dict], log_path: str | None = None,
             # —— 内存管理：逼近上下文预算就压缩老的工具输出 ——
             messages, events = context.maybe_compress(messages)
             if events:
+                compression_seen[0] = True  # 换出开始了：笔记从此刻起有保值义务
                 record({"type": "compress", "step": step, "events": events,
                         "est_tokens": context.estimate_tokens(messages)})
 
@@ -285,6 +291,7 @@ def run_messages(messages: list[dict], log_path: str | None = None,
             except llm.ContextOverflow:
                 # 缺页处理：窗口炸了 → 强制压缩 → 重试一次
                 messages, events = context.compress(messages)
+                compression_seen[0] = True
                 record({"type": "overflow_compress", "step": step, "events": events})
                 try:
                     message, usage = llm.chat(messages, schemas, on_token=on_token)
@@ -380,6 +387,7 @@ def run_messages(messages: list[dict], log_path: str | None = None,
                     if tc.function.name == "digest" and not result.startswith("error"):
                         pending_digest[0] = False
                     elif (digest_available
+                          and (compression_seen[0] or digest_force_always)
                           and tc.function.name in OBSERVATION_TOOLS
                           and len(result) > DIGEST_ENFORCE_MIN_CHARS):
                         pending_digest[0] = True
