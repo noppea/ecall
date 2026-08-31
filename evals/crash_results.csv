@@ -1,0 +1,5 @@
+ts,task,config,model,rep,passed,fate,tokens,reads,digests,compressions,wall_s,log,check_tail
+1788164076,kernel-quiz,full,deepseek,1,1,done,90266,20,11,14,50.6,traj.jsonl,
+1788164127,kernel-quiz,full,deepseek,2,1,done,127929,24,9,13,66.6,traj.jsonl,
+1788164193,kernel-quiz,nodigest,deepseek,1,1,done,453575,89,0,25,162.0,traj.jsonl,
+1788164355,kernel-quiz,nodigest,deepseek,2,1,done,366522,98,0,24,185.5,traj.jsonl,
