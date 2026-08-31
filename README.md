@@ -84,8 +84,8 @@ python3 main.py fork .ecall-log.jsonl -s 12    # 从第 12 步分叉，换个方
 | 流式传输 | SSE 默认开启，增量合并 tool_call 分片；`ECALL_NO_STREAM=1` 一键回退 | `llm.py` |
 | 项目记忆 | AGENTS.md 声明式项目指令（会话开始时冻结注入，保护前缀缓存） | `agent.py` |
 | 中途干预 | 运行中写 `.ecall-steer` 文件，在步边界注入一条用户消息（消费即焚） | `agent.py` |
-| 评测 | 8 个种子任务 + 4 个进阶任务 × 3 次重复，临时目录隔离，check 命令退出码作判决，结果落 CSV | `evals/` |
-| 测试 | 38 个离线单元测试，零网络零 API，stdlib unittest | `tests/` |
+| 评测 | 8 个种子任务 + 4 个进阶任务 + 7 个内核级大任务（真实 Rust 内核 fixture），临时目录隔离，check 命令退出码作判决，FAIL 自动打印检查器断言，结果落 CSV | `evals/` |
+| 测试 | 46 个离线单元测试，零网络零 API，stdlib unittest | `tests/` |
 
 ## 评测结果
 
@@ -114,18 +114,31 @@ digest 消融（进阶集，8k 压缩水位线，**n=40/组**）：
 | full（强制 digest） | 40/40 | 15810 |
 | nodigest | 40/40 | 16008 |
 
-内核级大任务（真实 Rust 内核仓库，数千行；预算放宽至 150 步 / 3M token）：
+内核级任务（真实 Rust 内核 fixture，8k 压缩水位线）：
 
-| 配置 | census（统计） | doc（架构写作） |
+统计类（census / unwrap / deps / bigfile，DeepSeek，r=5/组，150 步 / 3M 预算）：
+
+| 任务 | full | nodigest |
 |---|---|---|
-| full | 3/3，中位 53k tok | 2/3 |
-| nodigest | 3/3，中位 80k tok | 1/3 |
+| census（unsafe/MODS/ARCHS 统计） | 5/5，中位 48657 tok | 5/5，中位 58929 tok |
+| unwrap（unwrap 计数 + 最密集文件） | 5/5，中位 31726 tok | 5/5，中位 28444 tok |
+| deps（依赖普查 + 最多依赖 crate） | 5/5，中位 27607 tok | 5/5，中位 20386 tok |
+| bigfile（文件数/行数/最大文件） | 5/5，中位 23140 tok | 5/5，中位 18293 tok |
+
+写作类：kernel-doc（通读全仓库写 ARCH.md，150 步 / 3M 预算，r=3/组）：full 2/3，nodigest 1/3。
+
+语义饱和任务 kernel-unsafe-audit（为全仓库 228 个 unsafe 块逐个写用途说明，
+检查器做全量位置比对 + 说明唯一性防套话；case study，n=1/组）：
+
+| 配置 | 结果 | 步数 | token | 备注 |
+|---|---|---|---|---|
+| full | PASS | 84 | 3.01M | digest 被强制触发 124 次；熔断瞬间恰好写完 |
+| nodigest | PASS | 82 | 2.90M | 自然 done；自发派子代理分流（36.6 万 tok，full 组为 0） |
 
 digest 三级采用率实验（control policy 消融）：L1 仅提供 schema → 自发采用 0 次；
-L2 加入系统提示词原则 → 0 次；L3 runtime 强制（大观察未消化则拒绝后续工具）→ 采用率 0→8。
-唯一观察到的自发采用在持续高压的手动长会话（3 次）。
+L2 加入系统提示词原则 → 0 次；L3 runtime 强制（大观察未消化则拒绝后续工具）→ 饱和任务中单次运行触发 124 次。
 
-三个值得注意的发现：
+五个值得注意的发现：
 
 1. **在两个规模级别上，mini（仅 bash）pass 率均与 full 持平，且稳定省约 30~45% token**——
    bash 是万能观察工具，grep/cat/find 一件不缺，工具面差异被它消解。这复现并加强了
@@ -140,9 +153,17 @@ L2 加入系统提示词原则 → 0 次；L3 runtime 强制（大观察未消�
    8 步烧穿 2M token，修复为全局实时熔断）、fixture 空转时模型拒绝编造数据（"证据优先"
    原则实弹生效）、以及 agent 自主发现"read_file 有 jail 而 run_shell 没有"的红队行为——
    这正是 bwrap 沙盒必须默认开启的论据。
-4. **自我压缩的采用率是 control policy 的函数**：digest 工具三级治理实验见上表；
-   在 n=40×2 的消融上强制 digest 成本与收益相抵（中位数差 1.2%）——机制价值域在长程任务，
-   采用可以被强制，价值仍需规模兑现。
+4. **自我压缩：采用率可以被强制，价值取决于任务形态。** digest 三级治理实验见上；
+   小任务 n=40×2 消融无差异（中位数差 1.2%），228 条目的语义饱和任务上 n=1×2 镜像平局
+   （3.01M vs 2.90M，步数 84 vs 82）。原因：**write-as-you-go 任务里成果边做边落盘，
+   文件系统才是最终的记忆外存**——被压缩丢弃的只是原料，不是成果。值得注意的细节：
+   nodigest 组自发派子代理分流读取（36.6 万 token），full 组一个没用——没有 digest 时
+   模型会自己寻找别的上下文分流路径。digest 的价值域可能在不支持增量落盘的任务形态，
+   留作未来工作。
+5. **检查器也是软件，也有边界用例 bug。** kernel-deps 初版检查器没考虑"零依赖 + 全员并列"
+   的退化情形：模型正确回答 DEPS=0 与 MAXCRATE=N/A，却被要求等于 max() 任意挑出的路径，
+   10/10 团灭——暴露的是 eval bug 而非模型缺陷。修复经历三轮（接受 N/A → 接受空值 →
+   prompt 显式约定退化协议），教训：**精确匹配类评测里，"答案不存在"情形的输出协议必须显式约定**。
 
 生成可视化报告：`python3 evals/report.py`（results.csv → 单文件 HTML，零依赖）。
 
