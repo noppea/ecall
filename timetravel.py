@@ -95,7 +95,9 @@ def rewind(log_path: str, to_step: int) -> None:
 def rebuild_messages(log_path: str, to_step: int) -> list[dict]:
     """从轨迹事件重建 to_step 之前（含）的完整对话历史。
 
-    tool 事件没有记录 tool_call_id，按顺序和上面 llm 事件的 tool_calls 配对。
+    tool 事件用 call_id 与 llm 事件的 tool_calls 精确配对
+    （并行清账会重排执行顺序，顺序配对会张冠李戴）；
+    旧轨迹没有 call_id，退化为按顺序配对。
     """
     events = load_events(log_path)
     messages = [{"role": "system", "content": agent.build_system_prompt()}]
@@ -118,7 +120,14 @@ def rebuild_messages(log_path: str, to_step: int) -> list[dict]:
                 msg["tool_calls"] = list(pending_calls)
             messages.append(msg)
         elif e["type"] == "tool" and pending_calls:
-            tc = pending_calls.pop(0)
+            cid = e.get("call_id")
+            if cid is not None:
+                idx = next((i for i, tc in enumerate(pending_calls)
+                            if tc["id"] == cid), None)
+                tc = pending_calls.pop(idx) if idx is not None \
+                    else pending_calls.pop(0)  # 找不到也不停摆
+            else:
+                tc = pending_calls.pop(0)  # 旧轨迹：顺序配对
             messages.append({"role": "tool", "tool_call_id": tc["id"],
                              "content": e["result"]})
             if tc["function"]["name"] == "digest":
