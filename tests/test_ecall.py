@@ -322,5 +322,218 @@ class TestRebuild(WorkspaceCase):
         self.assertEqual(msgs[i_steer]["role"], "user")
 
 
+# ---------- todo：模型的外部记忆（§上下文漂移） ----------
+
+class TestTodo(WorkspaceCase):
+    def tearDown(self):
+        tools.TODO = []  # 会话级状态，用例间必须清零
+        super().tearDown()
+
+    def test_update_and_render(self):
+        r = tools.execute("todo", json.dumps({"items": [
+            {"content": "读代码", "status": "done"},
+            {"content": "修 bug", "status": "doing"}]}))
+        self.assertIn("[x] 读代码", r)
+        self.assertIn("[~] 修 bug", r)
+
+    def test_full_replace_semantics(self):
+        """全量替换而非追加：模型对计划有完全控制权。"""
+        tools.execute("todo", json.dumps({"items": [{"content": "A", "status": "doing"}]}))
+        tools.execute("todo", json.dumps({"items": [{"content": "B", "status": "done"}]}))
+        self.assertEqual(len(tools.TODO), 1)
+        self.assertEqual(tools.TODO[0]["content"], "B")
+
+    def test_bad_status_normalized(self):
+        """模型乱填 status 不该炸——归一化为 pending。"""
+        tools.execute("todo", json.dumps({"items": [{"content": "A", "status": "胡说"}]}))
+        self.assertEqual(tools.TODO[0]["status"], "pending")
+
+    def test_cap_items(self):
+        items = [{"content": f"t{i}", "status": "pending"} for i in range(50)]
+        tools.execute("todo", json.dumps({"items": items}))
+        self.assertEqual(len(tools.TODO), tools.TODO_MAX_ITEMS)
+
+
+# ---------- digest：模型笔记占位符（§即时自我压缩） ----------
+
+class TestDigest(WorkspaceCase):
+    def test_digest_tool_validation(self):
+        self.assertIn("ok", tools.execute("digest", json.dumps({"summary": "重点在 42 行"})))
+        self.assertIn("error", tools.execute("digest", json.dumps({"summary": "  "})))
+
+    def test_compress_prefers_model_note(self):
+        """有 digest 的观察，压缩占位符用模型笔记而不是首行规则。"""
+        big = "噪音行\n" + "x" * 400
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+        for i in range(6):
+            msgs += [{"role": "assistant", "content": "",
+                      "tool_calls": [{"id": f"c{i}", "type": "function",
+                                      "function": {"name": "read_file",
+                                                   "arguments": "{}"}}]},
+                     {"role": "tool", "tool_call_id": f"c{i}", "content": big}]
+        msgs[3]["_digest"] = "关键：bug 在 fetch 的重试逻辑"  # 给最旧那条 tool 观察贴上笔记
+        _msgs, events = context.compress(msgs)
+        self.assertGreaterEqual(len(events), 1)
+        # 被压缩的最旧一条应带着模型笔记
+        self.assertIn("模型笔记：关键：bug 在 fetch 的重试逻辑", msgs[3]["content"])
+        self.assertIn(".ecall-swap/", msgs[3]["content"])  # 指针还在，原文可拉回
+
+    def test_compress_falls_back_without_digest(self):
+        """没贴笔记的观察退回首行规则——机制向下兼容。"""
+        big = "首行信息\n" + "x" * 400
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+        for i in range(6):
+            msgs += [{"role": "assistant", "content": "",
+                      "tool_calls": [{"id": f"c{i}", "type": "function",
+                                      "function": {"name": "read_file",
+                                                   "arguments": "{}"}}]},
+                     {"role": "tool", "tool_call_id": f"c{i}", "content": big}]
+        context.compress(msgs)
+        self.assertIn("首行：首行信息", msgs[3]["content"])
+        self.assertNotIn("模型笔记", msgs[3]["content"])
+
+
+# ---------- digest 强制政策（§control policy 最高档） ----------
+
+class _FakeMsg:
+    """模拟 SDK 返回的消息对象：content + tool_calls。"""
+    def __init__(self, content="", tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+
+class _FakeTC:
+    class _Fn:
+        def __init__(self, name, arguments):
+            self.name, self.arguments = name, arguments
+    def __init__(self, name, arguments, _id="c1"):
+        self.id = _id
+        self.function = self._Fn(name, arguments)
+    def model_dump(self):
+        return {"id": self.id, "type": "function",
+                "function": {"name": self.function.name,
+                             "arguments": self.function.arguments}}
+
+
+class TestDigestEnforcement(WorkspaceCase):
+    def _run_script(self, script):
+        """用剧本假扮模型跑主循环，返回轨迹事件。"""
+        import types
+        calls = {"i": 0}
+        def fake_chat(messages, tools_, max_retries=3, on_token=None):
+            msg = script[min(calls["i"], len(script) - 1)]
+            calls["i"] += 1
+            usage = types.SimpleNamespace(total_tokens=100, model_dump=lambda: {})
+            return msg, usage
+        import llm as llm_mod
+        old = llm_mod.chat
+        agent.llm.chat = fake_chat
+        try:
+            log = str(self.ws / "t.jsonl")
+            agent.run_messages(
+                [{"role": "system", "content": "s"},
+                 {"role": "user", "content": "t"}],
+                log_path=log, header={"type": "task", "content": "t"})
+            return [json.loads(l) for l in open(log)]
+        finally:
+            agent.llm.chat = old
+
+    def test_big_observation_blocks_until_digest(self):
+        """剧本：读大文件 → 试图直接写文件（应被强制政策拒绝）→ digest → 完工。"""
+        big = "x" * 2000
+        (self.ws / "big.txt").write_text(big)
+        script = [
+            _FakeMsg(tool_calls=[_FakeTC("read_file", '{"path": "big.txt"}')]),
+            _FakeMsg(tool_calls=[_FakeTC("write_file", '{"path": "o.txt", "content": "y"}')]),
+            _FakeMsg(tool_calls=[_FakeTC("digest", '{"summary": "全是 x"}')]),
+            _FakeMsg(content="读完了"),
+        ]
+        events = self._run_script(script)
+        results = [e for e in events if e["type"] == "tool"]
+        # 第一发：大观察 + 强制通知
+        self.assertIn("强制笔记政策", results[0]["result"])
+        # 第二发：write_file 被拒之门外，o.txt 不应存在
+        self.assertIn("尚未 digest", results[1]["result"])
+        self.assertFalse((self.ws / "o.txt").exists())
+        # 第三发：digest 成功，解除挂起
+        self.assertIn("ok", results[2]["result"])
+
+    def test_enforcement_off_without_digest_tool(self):
+        """digest 不在工具面时（消融组/子代理），强制政策必须整体关闭——
+        否则就是死锁：要求用一个不存在的工具。"""
+        import types
+        big = "x" * 2000
+        (self.ws / "big.txt").write_text(big)
+        calls = {"i": 0}
+        script = [
+            _FakeMsg(tool_calls=[_FakeTC("read_file", '{"path": "big.txt"}')]),
+            _FakeMsg(tool_calls=[_FakeTC("write_file", '{"path": "o.txt", "content": "y"}')]),
+            _FakeMsg(content="done"),
+        ]
+        def fake_chat(messages, tools_, max_retries=3, on_token=None):
+            msg = script[min(calls["i"], len(script) - 1)]
+            calls["i"] += 1
+            return msg, types.SimpleNamespace(total_tokens=100, model_dump=lambda: {})
+        old = agent.llm.chat
+        agent.llm.chat = fake_chat
+        try:
+            schemas = [s for s in tools.SCHEMAS
+                       if s["function"]["name"] != "digest"]
+            log = str(self.ws / "t2.jsonl")
+            agent.run_messages(
+                [{"role": "system", "content": "s"},
+                 {"role": "user", "content": "t"}],
+                log_path=log, header={"type": "task", "content": "t"},
+                schemas=schemas)
+        finally:
+            agent.llm.chat = old
+        self.assertTrue((self.ws / "o.txt").exists())  # write 未被拦截
+
+
+# ---------- 预算全局熔断（§fork 炸弹修复） ----------
+
+class TestBudgetCircuitBreaker(WorkspaceCase):
+    def _run_with_usage(self, tokens_per_call, sub=False):
+        import types
+        def fake_chat(messages, tools_, max_retries=3, on_token=None):
+            return _FakeMsg(content="想"), types.SimpleNamespace(
+                total_tokens=tokens_per_call, model_dump=lambda: {})
+        old = agent.llm.chat
+        agent.llm.chat = fake_chat
+        try:
+            log = str(self.ws / "b.jsonl")
+            agent.run_messages(
+                [{"role": "system", "content": "s"},
+                 {"role": "user", "content": "t"}],
+                log_path=log, header={"type": "task", "content": "t"},
+                max_steps=10, _sub=sub)
+            return [json.loads(l) for l in open(log)]
+        finally:
+            agent.llm.chat = old
+
+    def test_breaker_trips_immediately(self):
+        """单次调用就烧穿预算 → 第 1 步立即熔断，不会活到第 2 步。"""
+        events = self._run_with_usage(agent.MAX_TOTAL_TOKENS + 1)
+        aborts = [e for e in events if e["type"] == "abort"]
+        self.assertTrue(aborts)
+        self.assertEqual(aborts[0]["reason"], "token_budget")
+        self.assertEqual(len([e for e in events if e["type"] == "llm"]), 1)
+
+    def test_subagent_shares_global_pool(self):
+        """子代理循环查同一个全局计数器：余额不足时第一步就该熔断，
+        而不是回家才交账单（fork 炸弹的修复回归测试）。"""
+        agent._TOTAL_SPENT[0] = agent.MAX_TOTAL_TOKENS - 50  # 预算只剩 50
+        events = self._run_with_usage(1000, sub=True)
+        aborts = [e for e in events if e["type"] == "abort"]
+        self.assertTrue(aborts)
+        self.assertEqual(len([e for e in events if e["type"] == "llm"]), 1)
+
+    def test_top_level_resets_pool(self):
+        """顶层任务重置预算池：上一个任务的花费不该拖累下一个。"""
+        agent._TOTAL_SPENT[0] = 10**9
+        events = self._run_with_usage(100)  # 顶层（sub=False）应先清零
+        # 池子被重置，100 tokens 远未超限 → 不该有 budget abort
+        self.assertFalse([e for e in events if e.get("reason") == "token_budget"])
+
+
 if __name__ == "__main__":
     unittest.main()
