@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import agent
 import context
+import main
 import timetravel
 import tools
 
@@ -652,6 +653,48 @@ class TestDigestEnforcement(WorkspaceCase):
         # write 被拒，直到 digest 清账
         self.assertIn("尚未 digest", results[2]["result"])
         self.assertFalse((self.ws / "o.txt").exists())
+
+
+# ---------- 会话恢复入口（§resume 找日志的盲区修复） ----------
+
+class TestResumeLogSelection(WorkspaceCase):
+    """交互模式下永远静默开新会话——机制有测试、入口没有。
+    修复后：显式路径 > ECALL_LOG > 该工作区最新轨迹。"""
+
+    def setUp(self):
+        super().setUp()
+        self._old_home = os.environ.get("HOME")
+        self.home = Path(self._tmp.name) / "home"
+        (self.home / ".ecall" / "logs").mkdir(parents=True)
+        os.environ["HOME"] = str(self.home)  # POSIX 下 Path.home() 认 HOME
+
+    def tearDown(self):
+        if self._old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._old_home
+        os.environ.pop("ECALL_LOG", None)
+        super().tearDown()
+
+    def _mklog(self, stamp):
+        p = self.home / ".ecall" / "logs" / f"{self.ws.name}-{stamp}.jsonl"
+        p.write_text("{}\n")
+        return str(p)
+
+    def test_picks_latest_by_timestamp(self):
+        self._mklog("20260101-000000")
+        newest = self._mklog("20260901-235959")
+        self._mklog("20260501-120000")
+        self.assertEqual(main._find_resume_log(), newest)
+
+    def test_explicit_env_beats_latest(self):
+        self._mklog("20260901-235959")
+        env_log = self._mklog("20260101-000000")
+        os.environ["ECALL_LOG"] = env_log
+        self.assertEqual(main._find_resume_log(), env_log)
+
+    def test_no_log_returns_none(self):
+        self.assertIsNone(main._find_resume_log())
 
 
 # ---------- 预算全局熔断（§fork 炸弹修复） ----------
