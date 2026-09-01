@@ -62,7 +62,7 @@ python3 main.py "写一个命令行 todo 程序并自测"
 python3 main.py chat
 
 # 崩溃/退出后从轨迹恢复会话，接着聊
-python3 main.py chat --resume
+python3 main.py chat --resume [轨迹文件]  # 不给路径自动接最新轨迹
 
 # 时间旅行
 python3 main.py replay .ecall-log.jsonl        # 回放轨迹
@@ -88,7 +88,7 @@ python3 main.py fork .ecall-log.jsonl -s 12    # 从第 12 步分叉，换个方
 | 项目记忆 | AGENTS.md 声明式项目指令（会话开始时冻结注入，保护前缀缓存） | `agent.py` |
 | 中途干预 | 运行中写 `.ecall-steer` 文件，在步边界注入一条用户消息（消费即焚） | `agent.py` |
 | 评测 | 8 个种子任务 + 4 个进阶任务 + 7 个内核级大任务（真实 Rust 内核 fixture），临时目录隔离，check 命令退出码作判决，FAIL 自动打印检查器断言，结果落 CSV | `evals/` |
-| 测试 | 52 个离线单元测试，零网络零 API，stdlib unittest | `tests/` |
+| 测试 | 55 个离线单元测试，零网络零 API，stdlib unittest | `tests/` |
 
 ## 评测结果
 
