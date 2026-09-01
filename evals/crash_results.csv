@@ -1,5 +1,7 @@
 ts,task,config,model,rep,passed,fate,tokens,reads,digests,compressions,wall_s,log,check_tail
-1788164076,kernel-quiz,full,deepseek,1,1,done,90266,20,11,14,50.6,traj.jsonl,
-1788164127,kernel-quiz,full,deepseek,2,1,done,127929,24,9,13,66.6,traj.jsonl,
-1788164193,kernel-quiz,nodigest,deepseek,1,1,done,453575,89,0,25,162.0,traj.jsonl,
-1788164355,kernel-quiz,nodigest,deepseek,2,1,done,366522,98,0,24,185.5,traj.jsonl,
+1788200066,kernel-quiz,full,deepseek,1,1,done,22942,17,3,8,37.7,traj.jsonl,
+1788200103,kernel-quiz,full,deepseek,2,1,done,52823,38,20,14,92.9,traj.jsonl,
+1788200196,kernel-quiz,full,deepseek,3,1,done,212567,29,11,21,159.7,traj.jsonl,
+1788200356,kernel-quiz,nodigest,deepseek,1,1,done,416077,83,0,23,167.1,traj.jsonl,
+1788200523,kernel-quiz,nodigest,deepseek,2,1,done,257463,74,0,20,126.8,traj.jsonl,
+1788200650,kernel-quiz,nodigest,deepseek,3,1,done,525156,53,0,29,198.6,traj.jsonl,
