@@ -103,6 +103,8 @@ python3 main.py fork .ecall-log.jsonl -s 12    # 从第 12 步分叉，换个方
 | mini（仅 bash） | 24/24，4948 tok / 4 步 | — |
 | nodigest（digest 消融） | 24/24，9840 tok / 5 步 | — |
 
+![跨模型成本剖面](evals/figs/fig4_models.png)
+
 进阶集（12 次运行/组，DeepSeek）：full 12/12，14088 tok / 5 步；
 mini 12/12，9048 tok / 5 步。
 
@@ -154,6 +156,8 @@ digest 消融（write-as-you-go 任务，进阶集，8k 压缩水位线，**n=40
 一次、均在批次首发，疑似 API 侧抖动，未计入成本对比；nodigest 在 4k/2k 各有一发
 FAIL，单发 token 高达 2.0M——full 组任何一发都没超过 18.6 万。）
 
+![水位线扫描](evals/figs/fig1_waterline.png)
+
 低压区 1.02×（约等于免费）、高压区便宜 3~9 倍且多活一发——终版代码下 digest
 已从"需要权衡的保险"变成"没有理由不买"。这个局面是三刀砍出来的
 （开发期测量，16k + 全程强制，quiz，token 中位数）：
@@ -163,6 +167,8 @@ FAIL，单发 token 高达 2.0M——full 组任何一发都没超过 18.6 万�
 | 原始版（拒绝+等下一轮） | 23.0 万 | — |
 | + 并行清账 | 14.8 万（6 发） | 强制笔记的专属往返 |
 | + 批界冻结（终版） | **6.8 万** | 批内误拒的重发 |
+
+![降税解剖](evals/figs/fig2_tax_anatomy.png)
 
 ①自适应门（首次压缩事件发生后 enforcement 才上岗，`ECALL_DIGEST_FORCE=1`
 恢复全程强制）砍掉无风险时的强制次数；②并行清账（digest 与后续操作同一批
@@ -177,6 +183,8 @@ tool_calls 发出，runtime 提前执行 digest、按 call_id 精确配对）砍
 |---|---|---|---|---|
 | full | 3/3 | 22,942 / 52,823 / 212,567 | 17 / 38 / 29 | 3 / 20 / 11 |
 | nodigest | 3/3 | 257,463 / 416,077 / 525,156 | 53 / 74 / 83 | 0 |
+
+![崩溃恢复](evals/figs/fig3_crash_resume.png)
 
 两组都活了下来，但 full 靠 digest 笔记"回忆"进度，nodigest 只能把文件重读
 两三倍"重新调查"——token 中位数差 ≈7.9 倍（52,823 vs 416,077）。
@@ -221,7 +229,8 @@ L2 加入系统提示词原则 → 0 次；L3 runtime 强制 → 饱和任务中
    10/10 团灭——暴露的是 eval bug 而非模型缺陷。修复经历三轮（接受 N/A → 接受空值 →
    prompt 显式约定退化协议），教训：**精确匹配类评测里，"答案不存在"情形的输出协议必须显式约定**。
 
-生成可视化报告：`python3 evals/report.py`（results.csv → 单文件 HTML，零依赖）。
+生成可视化报告：`python3 evals/report.py`（results.csv → 单文件 HTML，零依赖）；
+画汇报图：`python3 evals/figs.py`（matplotlib → evals/figs/ 四张 PNG：水位线扫描、降税解剖、崩溃恢复、跨模型对比）。
 
 复现：`python3 evals/run_eval.py -c full -m deepseek -r 3`（`-c mini` 切换消融组，`-m` 只是分组标签）。
 
