@@ -1,5 +1,8 @@
 # ecall
 
+[![test](https://github.com/noppea/ecall/actions/workflows/test.yml/badge.svg)](https://github.com/noppea/ecall/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 一个简化的 Claude Code 式编程智能体 harness（~1500 行 Python，零 agent 框架）。
 
 名字来自 RISC-V 的 `ecall` 指令：模型是运行在 ring3 的用户进程，只能发起"系统调用"（tool call）；
