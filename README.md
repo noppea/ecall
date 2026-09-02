@@ -3,7 +3,7 @@
 [![test](https://github.com/noppea/ecall/actions/workflows/test.yml/badge.svg)](https://github.com/noppea/ecall/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一个简化的 Claude Code 式编程智能体 harness（~1500 行 Python，零 agent 框架）。
+一个简化的 Claude Code 式编程智能体 harness。
 
 名字来自 RISC-V 的 `ecall` 指令：模型是运行在 ring3 的用户进程，只能发起"系统调用"（tool call）；
 runtime 是内核，负责校验、执行、观察，并可以随时中止这次调用。
@@ -29,8 +29,7 @@ runtime 是内核，负责校验、执行、观察，并可以随时中止这次
                 └─ eval      评测统计的唯一事实来源
 ```
 
-屏幕输出可以是花哨的、给人看的；但一切机器消费都走轨迹。黑匣子理念：
-出事先看飞行记录仪，不猜。
+屏幕输出可以是花哨的、给人看的；但一切机器消费都走轨迹。
 
 **② 记忆是一个层级体系（和 OS 内存层级同构）。**
 
@@ -51,9 +50,9 @@ git clone <repo> && cd ecall
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 配置模型（API key 只走环境变量，仓库里不出现任何密钥）
-cp .env.example .env   # 填入你的 key，然后：
-set -a && source .env && set +a
+export ECALL_BASE_URL=<OpenAI 兼容网关地址>
+export ECALL_API_KEY=<你的 key>
+export ECALL_MODEL=deepseek-v4-flash (或其他模型)
 
 # 一次性任务
 python3 main.py "写一个命令行 todo 程序并自测"
